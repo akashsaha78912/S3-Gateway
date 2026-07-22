@@ -1,4 +1,4 @@
-package com.mediator.s3gateway;
+package com.mediator.s3gateway.config;
 
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -9,7 +9,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties("gateway")
 public class GatewayProperties {
 
-    private Path nearlineRoot = Path.of("./data/nld");
+       private Path nearlineRoot = Path.of("./data/nld");
     private Map<String, String> buckets = new LinkedHashMap<>();
     private Async async = new Async();
 

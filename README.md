@@ -2,6 +2,8 @@
 
 This is a focused, local-only S3-compatible gateway scaffold for the Mediator integration phase. It supports only the first-phase operations: configured-bucket listing, `ListObjectsV2`, `HEAD`, `GET` (including byte ranges), `PUT`, and `RestoreObject` (`POST ?restore`).
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the detailed component map, request flows, disk layout, feature ownership, error handling, tests, and extension points.
+
 ## Invariant
 
 `PUT` streams only to `gateway.nearline-root`. The upload is written to a sibling staging file and atomically renamed into the configured Nearline Disk path. This gateway has no code path that writes ALTO, tape, cloud, or another storage tier.
@@ -13,6 +15,28 @@ mvn spring-boot:run
 ```
 
 The default endpoint is `http://localhost:9000`; edit `src/main/resources/application.yml` to set the NLD path and fixed bucket-to-category aliases. Authentication, ACLs, bucket deletion, multipart, and HTTPS termination are intentionally deferred.
+
+## Source layout
+
+```text
+com.mediator.s3gateway
+├── S3GatewayApplication.java        Spring Boot entry point
+├── config/
+│   └── GatewayProperties.java       Type-safe gateway configuration
+├── web/
+│   ├── S3Controller.java            S3 HTTP endpoints
+│   ├── RequestIdFilter.java         S3 request identifiers
+│   └── S3ErrorHandler.java          S3 XML error responses
+├── storage/
+│   ├── NearlineStore.java           NLD object I/O and bucket/category registry
+│   └── ObjectMetadataStore.java     Category-scoped object metadata
+├── integration/
+│   └── RequestRegistry.java         Mediator integration seam
+└── exception/
+    └── S3Exception.java             Typed S3 protocol errors
+```
+
+Tests mirror the production packages under `src/test/java`.
 
 ## Bucket and category model
 

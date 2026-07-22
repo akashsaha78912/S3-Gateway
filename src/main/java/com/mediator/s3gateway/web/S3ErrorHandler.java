@@ -1,4 +1,6 @@
-package com.mediator.s3gateway;
+package com.mediator.s3gateway.web;
+
+import com.mediator.s3gateway.exception.S3Exception;
 
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;

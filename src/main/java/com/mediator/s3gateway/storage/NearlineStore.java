@@ -1,4 +1,4 @@
-package com.mediator.s3gateway;
+package com.mediator.s3gateway.storage;
 
 import java.io.File;
 import java.io.IOException;
@@ -32,6 +32,9 @@ import java.util.zip.CRC32C;
 import java.util.zip.Checksum;
 
 import org.springframework.stereotype.Service;
+
+import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.exception.S3Exception;
 
 @Service
 public class NearlineStore {
@@ -80,24 +83,55 @@ public class NearlineStore {
             persistDynamicBuckets();
         } catch (IOException | RuntimeException e) {
             dynamicBuckets.remove(bucket);
-            if (!existed)try {
-                Files.deleteIfExists(directory);
-            } catch (IOException ignored) {
+            if (!existed) {
+                try {
+                    Files.deleteIfExists(directory);
+                } catch (IOException ignored) {
+                }
             }
             throw e;
         }
         return category;
     }
 
+    public synchronized void deleteBucket(String bucket) throws IOException {
+        String category = category(bucket);
+        Path categoryDir = categoryPath(category);
+
+        // Disallow deletion if files remain inside
+        if (Files.exists(categoryDir)) {
+            try (Stream<Path> s = Files.list(categoryDir)) {
+                if (s.findAny().isPresent()) {
+                    throw new S3Exception(409, "BucketNotEmpty", "The bucket you tried to delete is not empty", bucket);
+                }
+            }
+            Files.deleteIfExists(categoryDir);
+        }
+
+        // Remove dynamic mapping if applicable
+        if (dynamicBuckets.containsKey(bucket)) {
+            dynamicBuckets.remove(bucket);
+            persistDynamicBuckets();
+        }
+    }
+
     public void delete(String bucket, String key) throws IOException {
-        Files.delete(existing(bucket, key));
+        Files.deleteIfExists(existing(bucket, key));
+    }
+
+    public void deleteObject(String category, String key) throws IOException {
+        Path base = categoryPath(category);
+        Path result = base.resolve(key).normalize();
+        if (result.startsWith(base)) {
+            Files.deleteIfExists(result);
+        }
     }
 
     private void validateBucket(String bucket) {
         if (bucket == null || !bucket.matches("[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")) {
             throw new S3Exception(400, "InvalidBucketName", "The specified bucket is not valid", bucket);
-    
-        }}
+        }
+    }
 
     private String dynamicCategory(String bucket) {
         return bucket.toUpperCase(Locale.ROOT).replace('-', '_').replace('.', '_');
@@ -132,8 +166,8 @@ public class NearlineStore {
         Path path = object(bucket, key);
         if (!Files.isRegularFile(path)) {
             throw new S3Exception(404, "NoSuchKey", "The specified key does not exist", key);
-        
-        }return path;
+        }
+        return path;
     }
 
     public Stored put(String bucket, String key, InputStream input, long expectedLength) throws IOException {
@@ -164,69 +198,58 @@ public class NearlineStore {
         MessageDigest sha512 = clientChecksums.containsKey("x-amz-checksum-sha512") ? messageDigest("SHA-512") : null;
         Checksum crc32 = clientChecksums.containsKey("x-amz-checksum-crc32") ? new CRC32() : null;
         Checksum crc32c = clientChecksums.containsKey("x-amz-checksum-crc32c") ? new CRC32C() : null;
+        
         try (InputStream in = input; OutputStream out = Files.newOutputStream(staging, StandardOpenOption.CREATE_NEW)) {
             byte[] buffer = new byte[1024 * 128];
             int n;
             while ((n = in.read(buffer)) != -1) {
                 out.write(buffer, 0, n);
                 digest.update(buffer, 0, n);
-                if (sha1 != null) {
-                    sha1.update(buffer, 0, n);
-                
-                }if (sha256 != null) {
-                    sha256.update(buffer, 0, n);
-                
-                }if (sha512 != null) {
-                    sha512.update(buffer, 0, n);
-                }
-                if (crc32 != null) {
-                    crc32.update(buffer, 0, n);
-                
-                }if (crc32c != null) {
-                    crc32c.update(buffer, 0, n);
-                }
+                if (sha1 != null) sha1.update(buffer, 0, n);
+                if (sha256 != null) sha256.update(buffer, 0, n);
+                if (sha512 != null) sha512.update(buffer, 0, n);
+                if (crc32 != null) crc32.update(buffer, 0, n);
+                if (crc32c != null) crc32c.update(buffer, 0, n);
                 written += n;
             }
         } catch (Exception e) {
             Files.deleteIfExists(staging);
             throw e;
         }
+
         if (expectedLength >= 0 && expectedLength != written) {
             Files.deleteIfExists(staging);
             throw new S3Exception(400, "IncompleteBody", "The received body length does not match Content-Length", key);
         }
+
         byte[] md5 = digest.digest();
         Map<String, byte[]> calculated = new HashMap<>();
         calculated.put("content-md5", md5);
         calculated.put("x-amz-checksum-md5", md5);
-        if (sha1 != null) {
-            calculated.put("x-amz-checksum-sha1", sha1.digest());
-        }
-        if (sha256 != null) {
-            calculated.put("x-amz-checksum-sha256", sha256.digest());
-        }
-        if (sha512 != null) {
-            calculated.put("x-amz-checksum-sha512", sha512.digest());
-        }
-        if (crc32 != null) {
-            calculated.put("x-amz-checksum-crc32", checksumBytes(crc32));
-        }
-        if (crc32c != null) {
-            calculated.put("x-amz-checksum-crc32c", checksumBytes(crc32c));
-        }
+        if (sha1 != null) calculated.put("x-amz-checksum-sha1", sha1.digest());
+        if (sha256 != null) calculated.put("x-amz-checksum-sha256", sha256.digest());
+        if (sha512 != null) calculated.put("x-amz-checksum-sha512", sha512.digest());
+        if (crc32 != null) calculated.put("x-amz-checksum-crc32", checksumBytes(crc32));
+        if (crc32c != null) calculated.put("x-amz-checksum-crc32c", checksumBytes(crc32c));
+
         try {
             verifyChecksums(clientChecksums, calculated, key);
         } catch (S3Exception e) {
             Files.deleteIfExists(staging);
             throw e;
         }
+
         Map<String, String> responseChecksums = new LinkedHashMap<>();
-        clientChecksums.keySet().stream().filter(name -> name.startsWith("x-amz-checksum-")).forEach(name -> responseChecksums.put(name, Base64.getEncoder().encodeToString(calculated.get(name))));
+        clientChecksums.keySet().stream()
+                .filter(name -> name.startsWith("x-amz-checksum-"))
+                .forEach(name -> responseChecksums.put(name, Base64.getEncoder().encodeToString(calculated.get(name))));
+
         try {
             Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } catch (AtomicMoveNotSupportedException e) {
             Files.move(staging, destination, StandardCopyOption.REPLACE_EXISTING);
         }
+
         return new Stored(destination, written, hex(md5), Files.getLastModifiedTime(destination), responseChecksums);
     }
 
@@ -242,19 +265,21 @@ public class NearlineStore {
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
-            }).filter(e -> !e.key().startsWith(".gateway-multipart/")).filter(e -> prefix == null || e.key().startsWith(prefix)).sorted(Comparator.comparing(Entry::key)).toList();
+            })
+            .filter(e -> !e.key().startsWith(".gateway-multipart/"))
+            .filter(e -> prefix == null || e.key().startsWith(prefix))
+            .sorted(Comparator.comparing(Entry::key))
+            .toList();
         }
     }
 
     public record Stored(Path path, long length, String etag, FileTime lastModified, Map<String, String> checksums) {
-
         public Stored {
             checksums = Map.copyOf(checksums);
         }
     }
 
     public record Entry(String key, long length, FileTime lastModified) {
-
     }
 
     private static MessageDigest messageDigest(String algorithm) {
@@ -266,14 +291,22 @@ public class NearlineStore {
     }
 
     private static void validateChecksumHeaders(Map<String, String> checksums, String key) {
-        Map<String, Integer> lengths = Map.of("content-md5", 16, "x-amz-checksum-md5", 16, "x-amz-checksum-crc32", 4, "x-amz-checksum-crc32c", 4, "x-amz-checksum-sha1", 20, "x-amz-checksum-sha256", 32, "x-amz-checksum-sha512", 64);
+        Map<String, Integer> lengths = Map.of(
+                "content-md5", 16,
+                "x-amz-checksum-md5", 16,
+                "x-amz-checksum-crc32", 4,
+                "x-amz-checksum-crc32c", 4,
+                "x-amz-checksum-sha1", 20,
+                "x-amz-checksum-sha256", 32,
+                "x-amz-checksum-sha512", 64
+        );
         checksums.forEach((name, value) -> {
             try {
                 byte[] decoded = Base64.getDecoder().decode(value);
                 if (decoded.length != lengths.getOrDefault(name, -1)) {
                     throw new IllegalArgumentException();
-            
-                }} catch (IllegalArgumentException e) {
+                }
+            } catch (IllegalArgumentException e) {
                 throw new S3Exception(400, "InvalidDigest", "The checksum value specified is not valid", key);
             }
         });
@@ -284,8 +317,8 @@ public class NearlineStore {
             byte[] supplied = Base64.getDecoder().decode(value);
             if (!MessageDigest.isEqual(supplied, calculated.get(name))) {
                 throw new S3Exception(400, "BadDigest", "The checksum value specified did not match what was received", key);
-        
-            }});
+            }
+        });
     }
 
     private static void validateWriteConditions(Path destination, String key, String ifMatch, String ifNoneMatch) throws IOException {
@@ -313,11 +346,11 @@ public class NearlineStore {
         String result = value.trim();
         if (result.startsWith("W/")) {
             result = result.substring(2).trim();
-        
-        }if (result.length() >= 2 && result.startsWith("\"") && result.endsWith("\"")) {
+        }
+        if (result.length() >= 2 && result.startsWith("\"") && result.endsWith("\"")) {
             result = result.substring(1, result.length() - 1);
-        
-        }return result;
+        }
+        return result;
     }
 
     private static String fileEtag(Path path) throws IOException {
@@ -327,8 +360,8 @@ public class NearlineStore {
             int n;
             while ((n = in.read(buffer)) != -1) {
                 digest.update(buffer, 0, n);
-        
-            }}
+            }
+        }
         return hex(digest.digest());
     }
 
@@ -380,7 +413,7 @@ public class NearlineStore {
         StringBuilder s = new StringBuilder();
         for (byte b : bytes) {
             s.append(String.format("%02x", b));
-        
-        }return s.toString();
+        }
+        return s.toString();
     }
 }

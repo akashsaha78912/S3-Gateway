@@ -1,4 +1,4 @@
-package com.mediator.s3gateway;
+package com.mediator.s3gateway.exception;
 
 public class S3Exception extends RuntimeException {
 

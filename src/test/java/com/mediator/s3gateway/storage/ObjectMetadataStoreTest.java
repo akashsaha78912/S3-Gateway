@@ -1,4 +1,7 @@
-package com.mediator.s3gateway;
+package com.mediator.s3gateway.storage;
+
+import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.exception.S3Exception;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;

@@ -1,4 +1,4 @@
-package com.mediator.s3gateway;
+package com.mediator.s3gateway.web;
 
 import java.io.IOException;
 import java.security.SecureRandom;

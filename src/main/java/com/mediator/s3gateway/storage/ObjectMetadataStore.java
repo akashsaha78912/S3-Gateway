@@ -1,4 +1,7 @@
-package com.mediator.s3gateway;
+package com.mediator.s3gateway.storage;
+
+import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.exception.S3Exception;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -21,7 +24,7 @@ public class ObjectMetadataStore {
     private final GatewayProperties properties;
     private final NearlineStore store;
 
-    ObjectMetadataStore(GatewayProperties properties, NearlineStore store) {
+    public ObjectMetadataStore(GatewayProperties properties, NearlineStore store) {
         this.properties = properties;
         this.store = store;
     }

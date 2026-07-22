@@ -1,4 +1,7 @@
-package com.mediator.s3gateway;
+package com.mediator.s3gateway.integration;
+
+import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.storage.NearlineStore;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
