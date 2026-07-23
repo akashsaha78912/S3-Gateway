@@ -12,9 +12,13 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/**
+ * Regression tests for centralized metadata paths, defaults and size limits.
+ */
 class ObjectMetadataStoreTest {
   @TempDir Path temp;
 
+  /** Aliases for one category must read and write one metadata record. */
   @Test
   void aliasesForTheSameCategoryShareMetadata() {
     GatewayProperties properties=new GatewayProperties();
@@ -43,6 +47,7 @@ class ObjectMetadataStoreTest {
     assertEquals("camera",saved.headers().userMetadata().get("x-amz-meta-source"));
   }
 
+  /** Older metadata without contentType receives the binary default. */
   @Test
   void defaultsMissingContentTypeForExistingMetadata() {
     GatewayProperties properties=new GatewayProperties();
@@ -55,6 +60,7 @@ class ObjectMetadataStoreTest {
     assertEquals("application/octet-stream",metadata.get("archive-one","old-object.bin").contentType());
   }
 
+  /** User metadata larger than the S3 2 KiB limit is rejected. */
   @Test
   void rejectsUserMetadataLargerThanTwoKiB() {
     String oversized="x".repeat(2048);

@@ -17,6 +17,13 @@ import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
 
+/**
+ * Persists object metadata separately from object bytes.
+ *
+ * <p>Metadata files live below {@code .gateway-metadata}. Category and object
+ * key components are Base64 URL encoded so metadata paths remain safe and
+ * aliases that resolve to the same category share the same metadata.
+ */
 @Service
 public class ObjectMetadataStore {
 
@@ -24,11 +31,15 @@ public class ObjectMetadataStore {
     private final GatewayProperties properties;
     private final NearlineStore store;
 
+    /** Creates the metadata store using the configured NLD root. */
     public ObjectMetadataStore(GatewayProperties properties, NearlineStore store) {
         this.properties = properties;
         this.store = store;
     }
 
+    /**
+     * Loads metadata, applying S3-compatible defaults when no property exists.
+     */
     public Metadata get(String bucket, String key) {
         Properties p = new Properties();
         Path path = file(bucket, key);
@@ -51,6 +62,9 @@ public class ObjectMetadataStore {
         return new Metadata(p.getProperty("storageClass", "STANDARD"), p.getProperty("restoreExpiry"), headers);
     }
 
+    /**
+     * Saves storage class, representation headers and x-amz-meta-* values.
+     */
     public void put(String bucket, String key, String storageClass, ObjectHeaders headers) {
         Properties p = new Properties();
         p.setProperty("storageClass", storageClass);
@@ -64,6 +78,9 @@ public class ObjectMetadataStore {
         write(file(bucket, key), p);
     }
 
+    /**
+     * Records the expiry time for a temporary restored copy.
+     */
     public void restored(String bucket, String key, int days) {
         Path path = file(bucket, key);
         Properties p = new Properties();
@@ -76,6 +93,7 @@ public class ObjectMetadataStore {
         write(path, p);
     }
 
+    /** Deletes only the centralized metadata record for an object. */
     public void delete(String bucket, String key) {
         try {
             Files.deleteIfExists(file(bucket, key));
@@ -84,6 +102,7 @@ public class ObjectMetadataStore {
         }
     }
 
+    /** Resolves the safe centralized metadata path for one logical object. */
     private Path file(String bucket, String key) {
         return properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-metadata").resolve(encodedCategory(store.category(bucket))).resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + ".properties");
     }
@@ -107,6 +126,7 @@ public class ObjectMetadataStore {
         }
     }
 
+    /** Creates parent directories and writes the Java properties document. */
     private void write(Path path, Properties p) {
         try {
             Files.createDirectories(path.getParent());
@@ -118,10 +138,16 @@ public class ObjectMetadataStore {
         }
     }
 
+    /**
+     * HTTP representation headers persisted for later GET and HEAD responses.
+     */
     public record ObjectHeaders(String contentType, String cacheControl, String contentDisposition, String contentEncoding, String contentLanguage, String expires, Map<String, String> userMetadata) {
 
         public ObjectHeaders {
+            // Defensive copying prevents metadata changes after validation.
             userMetadata = userMetadata == null ? Map.of() : Map.copyOf(userMetadata);
+
+            // S3 limits user-controlled metadata names and values to 2 KiB.
             int bytes = userMetadata.entrySet().stream().mapToInt(entry -> utf8Length(entry.getKey()) + utf8Length(entry.getValue())).sum();
             if (bytes > 2048) {
                 throw new S3Exception(400, "MetadataTooLarge", "Your metadata headers exceed the maximum allowed metadata size", "x-amz-meta-*");
@@ -133,6 +159,7 @@ public class ObjectMetadataStore {
         }
     }
 
+    /** Complete metadata returned to the controller for one object. */
     public record Metadata(String storageClass, String restoreExpiry, ObjectHeaders headers) {
 
         public String contentType() {

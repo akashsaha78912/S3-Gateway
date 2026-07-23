@@ -6,11 +6,21 @@ import java.util.Map;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+/**
+ * Type-safe view of the {@code gateway.*} settings in application.yml.
+ *
+ * <p>Spring populates this object during application startup.
+ */
 @ConfigurationProperties("gateway")
 public class GatewayProperties {
 
-       private Path nearlineRoot = Path.of("./data/nld");
+    /** Root directory under which all gateway-owned NLD data is stored. */
+    private Path nearlineRoot = Path.of("./data/nld");
+
+    /** Fixed mapping from public S3 bucket names to NLD category names. */
     private Map<String, String> buckets = new LinkedHashMap<>();
+
+    /** Settings for background request-registry work. */
     private Async async = new Async();
 
     public Path getNearlineRoot() {
@@ -37,8 +47,12 @@ public class GatewayProperties {
         this.async = async;
     }
 
+    /**
+     * Configuration for the RequestRegistry executor.
+     */
     public static class Async {
 
+        /** Number of background worker threads. */
         private int workers = 2;
 
         public int getWorkers() {

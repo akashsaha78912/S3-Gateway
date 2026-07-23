@@ -7,7 +7,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
+/**
+ * Verifies that every response receives both S3 request identifiers.
+ */
 class RequestIdFilterTest {
+
+  /** Confirms response headers and request attributes use the same IDs. */
   @Test
   void addsBothS3RequestIdentifiers() throws Exception {
     MockHttpServletRequest request=new MockHttpServletRequest("GET","/");

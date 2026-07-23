@@ -17,8 +17,13 @@ import java.util.concurrent.Executors;
 import org.springframework.stereotype.Service;
 
 /**
- * Temporary file-backed seam. Replace submit() with the Mediator Manager
- * request API.
+ * File-backed boundary between this standalone gateway and future Mediator
+ * processing.
+ *
+ * <p>Each archive or restore request is written below
+ * {@code .gateway-requests}. The object itself remains in the NLD store.
+ * Replace the marked executor body with the real Mediator Manager API when
+ * that integration phase begins.
  */
 @Service
 public class RequestRegistry {
@@ -27,23 +32,35 @@ public class RequestRegistry {
     private final NearlineStore store;
     private final ExecutorService executor;
 
+    /**
+     * Creates the registry and its configured fixed-size background executor.
+     */
     public RequestRegistry(GatewayProperties properties, NearlineStore store) {
         this.properties = properties;
         this.store = store;
         this.executor = Executors.newFixedThreadPool(properties.getAsync().getWorkers());
     }
 
+    /**
+     * Persists a new request, then advances its status asynchronously.
+     *
+     * @return the UUID assigned to the request record
+     */
     public String submit(String operation, String bucket, String key) {
         String category = store.category(bucket);
         String id = UUID.randomUUID().toString();
         Path requestFile = properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests").resolve(id + ".properties");
         write(requestFile, operation, category, key, "ACCEPTED");
+        // This background transition is the placeholder for a Manager call.
         executor.submit(() -> {
             write(requestFile, operation, category, key, "SUBMITTED_TO_MANAGER");
             /* MediatorManager.submit(request) belongs here. */ });
         return id;
     }
 
+    /**
+     * Finds the first recorded RESTORE request for the resolved object.
+     */
     public Optional<String> activeRestore(String bucket, String key) {
         String category = store.category(bucket);
         Path dir = properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests");
@@ -63,6 +80,9 @@ public class RequestRegistry {
         }
     }
 
+    /**
+     * Rewrites one request record with its latest status and timestamp.
+     */
     private void write(Path file, String operation, String category, String key, String status) {
         try {
             Files.createDirectories(file.getParent());
@@ -72,6 +92,9 @@ public class RequestRegistry {
         }
     }
 
+    /**
+     * Extracts one {@code name=value} field from a request-record string.
+     */
     private String value(String s, String field) {
         for (String line : s.split("\\R")) {
             if (line.startsWith(field + "=")) {

@@ -45,6 +45,15 @@ import com.mediator.s3gateway.storage.ObjectMetadataStore;
 
 import jakarta.servlet.http.HttpServletRequest;
 
+/**
+ * Exposes the supported S3-compatible HTTP operations.
+ *
+ * <p>This class owns HTTP concerns: route selection, request headers, query
+ * parameters, XML response construction and HTTP status codes. Physical NLD
+ * file access is delegated to {@link NearlineStore}, object metadata is
+ * delegated to {@link ObjectMetadataStore}, and archive/restore work is
+ * recorded through {@link RequestRegistry}.
+ */
 @RestController
 public class S3Controller {
 
@@ -54,17 +63,27 @@ public class S3Controller {
     private final RequestRegistry requests;
     private final ObjectMetadataStore metadata;
 
+    /**
+     * Spring injects the controller's storage collaborators through this
+     * constructor.
+     */
     public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata) {
         this.store = store;
         this.requests = requests;
         this.metadata = metadata;
     }
 
-    @GetMapping(value = "/", produces = MediaType.APPLICATION_XML_VALUE)//List of Buckets
+    /**
+     * Handles S3 ListBuckets: {@code GET /}.
+     *
+     * @return an AWS-style XML document containing every visible bucket
+     */
+    @GetMapping(value = "/", produces = MediaType.APPLICATION_XML_VALUE)
     public String listBuckets(HttpServletRequest request) {
         logRequest(request);
         log.info("Executing ListBuckets operation");
 
+        // Build the S3 XML response from the bucket names exposed by the store.
         StringBuilder x = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Buckets>");
         for (String b : store.buckets()) {
             x.append("<Bucket><Name>").append(xml(b)).append("</Name></Bucket>");
@@ -72,7 +91,13 @@ public class S3Controller {
         return x.append("</Buckets></ListAllMyBucketsResult>").toString();
     }
 
-    @PutMapping("/{bucket}") //create bucket
+    /**
+     * Handles CreateBucket: {@code PUT /{bucket}}.
+     *
+     * <p>The store validates the S3 bucket name and creates its category
+     * directory below the configured nearline root.
+     */
+    @PutMapping("/{bucket}")
     public ResponseEntity<Void> createBucket(@PathVariable String bucket, HttpServletRequest request) throws IOException {
         logRequest(request);
         log.info("Executing CreateBucket operation for bucket: {}", bucket);
@@ -81,7 +106,12 @@ public class S3Controller {
         return ResponseEntity.ok().header(HttpHeaders.LOCATION, "/" + bucket).build();
     }
 
-    @DeleteMapping("/{bucket}")//delete bucket disable as for now
+    /**
+     * Handles DeleteBucket requests, which are intentionally disabled.
+     *
+     * @return an S3 XML AccessDenied response without touching NLD data
+     */
+    @DeleteMapping("/{bucket}")
     public ResponseEntity<String> deleteBucket(@PathVariable String bucket, HttpServletRequest request) {
         logRequest(request);
         log.warn("Executing DeleteBucket (Disabled operation) for bucket: {}", bucket);
@@ -99,7 +129,12 @@ public class S3Controller {
                 .body(xmlError);
     }
 
-    @DeleteMapping("/{bucket}/{*key}")//delete object disable as for now
+    /**
+     * Handles DeleteObject requests, which are intentionally disabled.
+     *
+     * @return an S3 XML NotImplemented response without deleting the object
+     */
+    @DeleteMapping("/{bucket}/{*key}")
     public ResponseEntity<String> deleteObject(@PathVariable String bucket, @PathVariable String key, HttpServletRequest request) {
         logRequest(request);
         String actual = clean(key);
@@ -118,7 +153,14 @@ public class S3Controller {
                 .body(xmlError);
     }
 
-    @GetMapping(value = "/{bucket}", params = "list-type=2", produces = MediaType.APPLICATION_XML_VALUE)// list objects in bucket v2
+    /**
+     * Handles ListObjectsV2:
+     * {@code GET /{bucket}?list-type=2}.
+     *
+     * <p>Supports prefix filtering, delimiter grouping, start-after,
+     * continuation tokens and a maximum page size of 1000.
+     */
+    @GetMapping(value = "/{bucket}", params = "list-type=2", produces = MediaType.APPLICATION_XML_VALUE)
     public String list(@PathVariable String bucket,
             @RequestParam(required = false) String prefix,
             @RequestParam(required = false) String delimiter,
@@ -131,12 +173,14 @@ public class S3Controller {
         log.info("Executing ListObjectsV2 - Bucket: {}, Prefix: '{}', Delimiter: '{}', MaxKeys: {}, StartAfter: '{}', Token: '{}'",
                 bucket, prefix, delimiter, maxKeys, after, token);
 
+        // Resolve the bucket first so an unknown bucket returns NoSuchBucket.
         store.category(bucket);
         String pfx = prefix == null ? "" : prefix;
         List<NearlineStore.Entry> all = store.list(bucket, prefix).stream()
                 .filter(v -> after == null || v.key().compareTo(after) > 0)
                 .toList();
 
+        // This implementation's continuation token is a Base64-encoded list index.
         int start = token == null ? 0 : Integer.parseInt(new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8));
         int limit = Math.max(1, Math.min(maxKeys, 1000));
 
@@ -157,6 +201,7 @@ public class S3Controller {
         List<NearlineStore.Entry> items = filteredItems.subList(Math.min(start, filteredItems.size()), Math.min(start + limit, filteredItems.size()));
         boolean truncated = start + items.size() < filteredItems.size();
 
+        // Construct the AWS ListObjectsV2 XML response.
         StringBuilder x = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>")
                 .append(xml(bucket)).append("</Name><Prefix>").append(xml(prefix)).append("</Prefix><KeyCount>")
                 .append(items.size() + commonPrefixes.size()).append("</KeyCount><MaxKeys>").append(limit).append("</MaxKeys><IsTruncated>")
@@ -179,7 +224,12 @@ public class S3Controller {
         return x.append("</ListBucketResult>").toString();
     }
 
-    @RequestMapping(value = "/{bucket}/{*key}", method = RequestMethod.HEAD)// head object
+    /**
+     * Handles HeadObject: {@code HEAD /{bucket}/{key}}.
+     *
+     * <p>Returns the same object headers as GET but does not return file bytes.
+     */
+    @RequestMapping(value = "/{bucket}/{*key}", method = RequestMethod.HEAD)
     public ResponseEntity<Void> head(@PathVariable String bucket, @PathVariable String key, HttpServletRequest request) throws IOException {
         logRequest(request);
         String actual = clean(key);
@@ -189,7 +239,13 @@ public class S3Controller {
         return headers(p, metadata.get(bucket, actual)).build();
     }
 
-    @GetMapping("/{bucket}/{*key}")//get object after restoring
+    /**
+     * Handles GetObject: {@code GET /{bucket}/{key}}.
+     *
+     * <p>A request without Range returns 200 and the full file. A valid
+     * single byte range returns 206, Content-Range and only the selected bytes.
+     */
+    @GetMapping("/{bucket}/{*key}")
     public ResponseEntity<InputStreamResource> get(@PathVariable String bucket,
             @PathVariable String key,
             @RequestHeader(value = "Range", required = false) String range,
@@ -198,6 +254,7 @@ public class S3Controller {
         String actual = clean(key);
         log.info("Executing GetObject - Bucket: {}, Key: {}, Range Header: {}", bucket, actual, range);
 
+        // Resolve and validate the object before opening its NLD file.
         Path p = store.existing(bucket, actual);
         long size = Files.size(p), start = 0, end = size - 1;
         HttpStatus status = HttpStatus.OK;
@@ -207,6 +264,7 @@ public class S3Controller {
             end = parsed[1];
             status = HttpStatus.PARTIAL_CONTENT;
         }
+        // Start reading at the requested byte offset.
         InputStream in = Files.newInputStream(p);
         in.skipNBytes(start);
         long count = end - start + 1;
@@ -221,10 +279,18 @@ public class S3Controller {
         if (status == HttpStatus.PARTIAL_CONTENT) {
             h.set(HttpHeaders.CONTENT_RANGE, "bytes " + start + "-" + end + "/" + size);
         }
+        // BoundedInputStream prevents a range response from reading past its end.
         return new ResponseEntity<>(new InputStreamResource(new BoundedInputStream(in, count)), h, status);
     }
 
-    @PutMapping("/{bucket}/{*key}")//put object 
+    /**
+     * Handles PutObject: {@code PUT /{bucket}/{key}}.
+     *
+     * <p>The request body always lands in the local nearline store first.
+     * After the object write succeeds, this method persists its HTTP metadata,
+     * records the archive request and returns the calculated ETag.
+     */
+    @PutMapping("/{bucket}/{*key}")
     public ResponseEntity<?> put(@PathVariable String bucket,
             @PathVariable String key,
             @RequestHeader(value = "x-amz-storage-class", defaultValue = "STANDARD") String storageClass,
@@ -240,11 +306,15 @@ public class S3Controller {
             throw new S3Exception(400, "InvalidStorageClass", "Supported storage classes are STANDARD, GLACIER, DEEP_ARCHIVE", storageClass);
         }
 
+        // Capture standard representation headers and all x-amz-meta-* values.
         ObjectMetadataStore.ObjectHeaders objectHeaders = requestHeaders(request);
         Map<String, String> checksums = clientChecksums(request);
 
+        // Pass the ordinary servlet request stream directly to NearlineStore.
         InputStream inputStream = request.getInputStream();
         long expectedLength = request.getContentLengthLong();
+
+        // NearlineStore validates the key/checksums and atomically publishes the file.
         NearlineStore.Stored stored = store.put(
                 bucket,
                 actual,
@@ -255,14 +325,17 @@ public class S3Controller {
                 request.getHeader(HttpHeaders.IF_NONE_MATCH)
         );
 
-        // Add this:
+        // Make the completed NLD landing visible in the application log.
         log.info(
                 "PUT received. Content-Length: {}, saved to: {}",
                 stored.length(),
                 stored.path()
         );
 
+        // Persist metadata only after the object bytes have been saved successfully.
         metadata.put(bucket, actual, storageClass, objectHeaders);
+
+        // Record the asynchronous archive hand-off; this does not replace NLD storage.
         requests.submit("ARCHIVE", bucket, actual);
         String rawEtag = stored.etag().replace("\"", "");
 
@@ -270,6 +343,7 @@ public class S3Controller {
                 .contentLength(0)
                 .eTag("\"" + rawEtag + "\"");
 
+        // Echo each checksum that NearlineStore calculated and verified.
         stored.checksums().forEach(response::header);
 
         if (!stored.checksums().isEmpty()) {
@@ -279,7 +353,13 @@ public class S3Controller {
         return response.build();
     }
 
-    @PostMapping(value = "/{bucket}/{*key}", params = "restore")//restore request for object
+    /**
+     * Handles RestoreObject: {@code POST /{bucket}/{key}?restore}.
+     *
+     * <p>The object must already exist. Archived objects receive a temporary
+     * restore expiry and every accepted request is recorded for later work.
+     */
+    @PostMapping(value = "/{bucket}/{*key}", params = "restore")
     public ResponseEntity<Void> restore(@PathVariable String bucket,
             @PathVariable String key,
             @RequestBody(required = false) String restoreRequest,
@@ -288,6 +368,7 @@ public class S3Controller {
         String actual = clean(key);
         log.info("Executing RestoreObject - Bucket: {}, Key: {}, Restore Body: {}", bucket, actual, restoreRequest);
 
+        // Fail with NoSuchKey before changing metadata or submitting work.
         store.existing(bucket, actual);
         ObjectMetadataStore.Metadata m = metadata.get(bucket, actual);
         if (!"STANDARD".equals(m.storageClass())) {
@@ -297,7 +378,14 @@ public class S3Controller {
         return ResponseEntity.accepted().header("x-amz-restore", restoreHeader(metadata.get(bucket, actual))).build();
     }
 
-    @PostMapping(value = "/{bucket}", params = "delete", produces = MediaType.APPLICATION_XML_VALUE)// multi delete objects in bucket
+    /**
+     * Handles the S3 multi-object delete request:
+     * {@code POST /{bucket}?delete}.
+     *
+     * <p>Each Key element is processed independently and represented as either
+     * Deleted or Error in the response XML.
+     */
+    @PostMapping(value = "/{bucket}", params = "delete", produces = MediaType.APPLICATION_XML_VALUE)
     public String multiDelete(@PathVariable String bucket, @RequestBody String requestXml, HttpServletRequest request) throws IOException {
         logRequest(request);
         log.info("Executing MultiDelete - Bucket: {}, Body XML: {}", bucket, requestXml);
@@ -322,7 +410,10 @@ public class S3Controller {
     }
 
     /**
-     * Inspects and logs all incoming HTTP request details generated by SDKs.
+     * Logs the incoming method, URI, query string and request headers.
+     *
+     * <p>Do not use this unchanged in an environment where headers may contain
+     * credentials or other secrets.
      */
     private void logRequest(HttpServletRequest request) {
         StringBuilder sb = new StringBuilder();
@@ -343,6 +434,9 @@ public class S3Controller {
         log.info(sb.toString());
     }
 
+    /**
+     * Builds the common successful HeadObject response headers.
+     */
     private ResponseEntity.BodyBuilder headers(Path p, ObjectMetadataStore.Metadata m) throws IOException {
         HttpHeaders h = new HttpHeaders();
         applyObjectHeaders(h, m);
@@ -351,10 +445,17 @@ public class S3Controller {
         return builder;
     }
 
+    /**
+     * Converts stored restore state into the S3 x-amz-restore header format.
+     */
     private static String restoreHeader(ObjectMetadataStore.Metadata m) {
         return m.restoreExpiry() == null ? "ongoing-request=\"false\"" : "ongoing-request=\"false\", expiry-date=\"" + m.restoreExpiry() + "\"";
     }
 
+    /**
+     * Reads the requested restore duration from the XML body, defaulting to
+     * seven days when the body or Days element is absent.
+     */
     private static int restoreDays(String body) {
         if (body == null) {
             return 7;
@@ -363,10 +464,16 @@ public class S3Controller {
         return m.find() ? Integer.parseInt(m.group(1)) : 7;
     }
 
+    /**
+     * Spring's {*key} capture includes a leading slash; storage keys do not.
+     */
     private static String clean(String key) {
         return key.startsWith("/") ? key.substring(1) : key;
     }
 
+    /**
+     * Parses a Content-Type value and translates invalid input into an S3 error.
+     */
     private static MediaType contentType(String value) {
         try {
             return value == null || value.isBlank() ? MediaType.APPLICATION_OCTET_STREAM : MediaType.parseMediaType(value);
@@ -375,6 +482,9 @@ public class S3Controller {
         }
     }
 
+    /**
+     * Extracts persistable object headers from a PutObject request.
+     */
     private static ObjectMetadataStore.ObjectHeaders requestHeaders(HttpServletRequest request) {
         Map<String, String> userMetadata = new TreeMap<>();
         Enumeration<String> names = request.getHeaderNames();
@@ -387,6 +497,9 @@ public class S3Controller {
         return new ObjectMetadataStore.ObjectHeaders(contentType(request.getContentType()).toString(), request.getHeader(HttpHeaders.CACHE_CONTROL), request.getHeader(HttpHeaders.CONTENT_DISPOSITION), request.getHeader(HttpHeaders.CONTENT_ENCODING), request.getHeader(HttpHeaders.CONTENT_LANGUAGE), request.getHeader(HttpHeaders.EXPIRES), userMetadata);
     }
 
+    /**
+     * Collects supported checksum headers for validation by NearlineStore.
+     */
     private static Map<String, String> clientChecksums(HttpServletRequest request) {
         Map<String, String> checksums = new LinkedHashMap<>();
         for (String name : List.of("content-md5", "x-amz-checksum-md5", "x-amz-checksum-crc32", "x-amz-checksum-crc32c", "x-amz-checksum-sha1", "x-amz-checksum-sha256", "x-amz-checksum-sha512")) {
@@ -398,6 +511,9 @@ public class S3Controller {
         return checksums;
     }
 
+    /**
+     * Restores persisted content and user-metadata headers onto GET/HEAD.
+     */
     private static void applyObjectHeaders(HttpHeaders target, ObjectMetadataStore.Metadata metadata) {
         ObjectMetadataStore.ObjectHeaders h = metadata.headers();
         target.setContentType(contentType(h.contentType()));
@@ -409,12 +525,20 @@ public class S3Controller {
         h.userMetadata().forEach(target::set);
     }
 
+    /**
+     * Adds a response header only when its persisted value is meaningful.
+     */
     private static void set(HttpHeaders headers, String name, String value) {
         if (value != null && !value.isBlank()) {
             headers.set(name, value);
         }
     }
 
+    /**
+     * Parses one HTTP bytes range and clamps its end to the object size.
+     *
+     * @return a two-element array containing the inclusive start and end
+     */
     private static long[] parseRange(String r, long size) {
         try {
             if (!r.startsWith("bytes=")) {
@@ -432,14 +556,23 @@ public class S3Controller {
         }
     }
 
+    /**
+     * Formats a file timestamp for S3 XML responses.
+     */
     private static String time(FileTime t) {
         return DateTimeFormatter.ISO_INSTANT.format(t.toInstant());
     }
 
+    /**
+     * Escapes text before inserting it into an XML response.
+     */
     private static String xml(String s) {
         return s == null ? "" : s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
+    /**
+     * Limits an underlying file stream to the selected response byte count.
+     */
     private static class BoundedInputStream extends FilterInputStream {
 
         long remaining;

@@ -16,9 +16,14 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/**
+ * Regression tests for bucket/category resolution, safe NLD paths, upload
+ * integrity and conditional PutObject behavior.
+ */
 class NearlineStoreTest {
   @TempDir Path temp;
 
+  /** Verifies that configured aliases store bytes under their category. */
   @Test
   void storesObjectsUnderMappedCategoryInsteadOfBucketAlias() throws Exception {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -29,6 +34,7 @@ class NearlineStoreTest {
     assertFalse(Files.exists(temp.resolve("sports-archive")));
   }
 
+  /** Verifies that aliases sharing a category see the same physical object. */
   @Test
   void aliasesForTheSameCategoryExposeTheSameObjects() throws Exception {
     GatewayProperties properties=properties();
@@ -42,6 +48,7 @@ class NearlineStoreTest {
     assertEquals(1,store.list("sports-backup",null).size());
   }
 
+  /** Ensures ListBuckets does not expose unrelated NLD directories. */
   @Test
   void listsOnlyConfiguredAliases() throws Exception {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -50,6 +57,7 @@ class NearlineStoreTest {
     assertEquals(java.util.Set.of("sports-archive"),store.buckets());
   }
 
+  /** Ensures a directory alone cannot make an unknown bucket valid. */
   @Test
   void rejectsUnknownBucketEvenWhenMatchingDirectoryExists() throws Exception {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -61,6 +69,7 @@ class NearlineStoreTest {
     assertEquals("NoSuchBucket",error.code());
   }
 
+  /** Protects the NLD root from an escaping configured category. */
   @Test
   void rejectsCategoryThatEscapesNearlineRoot() {
     NearlineStore store=store("sports-archive","../outside");
@@ -68,6 +77,7 @@ class NearlineStoreTest {
     assertThrows(IllegalStateException.class,() -> store.object("sports-archive","file.txt"));
   }
 
+  /** Accepts an upload whose supplied Content-MD5 matches its bytes. */
   @Test
   void acceptsMatchingClientMd5() throws Exception {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -79,6 +89,7 @@ class NearlineStoreTest {
     assertTrue(Files.isRegularFile(temp.resolve("SPORTS/verified.txt")));
   }
 
+  /** Returns an additional verified SHA-256 checksum to the caller. */
   @Test
   void returnsVerifiedAdditionalChecksum() throws Exception {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -90,6 +101,7 @@ class NearlineStoreTest {
     assertEquals(checksum,stored.checksums().get("x-amz-checksum-sha256"));
   }
 
+  /** Maps object-key traversal attempts to the S3 InvalidURI error. */
   @Test
   void traversalUsesStandardInvalidUriError() {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -100,6 +112,7 @@ class NearlineStoreTest {
     assertEquals("InvalidURI",error.code());
   }
 
+  /** Rejects bad checksums and removes incomplete staging files. */
   @Test
   void rejectsMismatchedChecksumAndRemovesStagingFile() {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -112,6 +125,7 @@ class NearlineStoreTest {
     assertDoesNotThrow(() -> {try(var files=Files.list(temp.resolve("SPORTS"))){assertTrue(files.noneMatch(p->p.getFileName().toString().endsWith(".uploading")));}});
   }
 
+  /** Rejects malformed checksum headers before any object is written. */
   @Test
   void rejectsMalformedChecksumBeforeWriting() {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -122,6 +136,7 @@ class NearlineStoreTest {
     assertFalse(Files.exists(temp.resolve("SPORTS/bad.txt")));
   }
 
+  /** Allows create-only PUT once and prevents a later overwrite. */
   @Test
   void ifNoneMatchCreatesNewObjectButPreventsOverwrite() throws Exception {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -134,6 +149,7 @@ class NearlineStoreTest {
     assertEquals("first",Files.readString(temp.resolve("SPORTS/create-only.txt")));
   }
 
+  /** Replaces an object only when If-Match contains its current ETag. */
   @Test
   void ifMatchReplacesOnlyTheExpectedObjectVersion() throws Exception {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -147,6 +163,7 @@ class NearlineStoreTest {
     assertEquals("second",Files.readString(temp.resolve("SPORTS/conditional.txt")));
   }
 
+  /** Requires a target object when PutObject supplies If-Match. */
   @Test
   void ifMatchRequiresAnExistingObject() {
     NearlineStore store=store("sports-archive","SPORTS");
@@ -157,6 +174,7 @@ class NearlineStoreTest {
     assertEquals("NoSuchKey",error.code());
   }
 
+  /** Ensures a dynamic bucket survives reconstruction of the store. */
   @Test
   void createsAndPersistsDynamicBucketAsCategory() throws Exception {
     NearlineStore store=new NearlineStore(properties());
@@ -171,6 +189,7 @@ class NearlineStoreTest {
     assertTrue(reloaded.buckets().contains("news-archive"));
   }
 
+  /** Rejects creation when a configured or dynamic bucket already exists. */
   @Test
   void rejectsCreatingExistingConfiguredOrDynamicBucket() throws Exception {
     NearlineStore configured=store("sports-archive","SPORTS");
@@ -185,6 +204,7 @@ class NearlineStoreTest {
     assertEquals("BucketAlreadyOwnedByYou",dynamicError.code());
   }
 
+  /** Rejects two dynamic bucket names that resolve to one category. */
   @Test
   void rejectsDynamicCategoryCollision() {
     NearlineStore store=store("existing-alias","NEWS_ARCHIVE");
@@ -196,6 +216,7 @@ class NearlineStoreTest {
     assertFalse(Files.exists(temp.resolve(".gateway-buckets.properties")));
   }
 
+  /** Rejects dynamic bucket names that violate supported S3 syntax. */
   @Test
   void rejectsInvalidDynamicBucketName() {
     NearlineStore store=new NearlineStore(properties());
@@ -206,12 +227,14 @@ class NearlineStoreTest {
     assertEquals("InvalidBucketName",error.code());
   }
 
+  /** Creates a test store with one optional bucket-to-category mapping. */
   private NearlineStore store(String bucket,String category) {
     GatewayProperties properties=properties();
     properties.getBuckets().put(bucket,category);
     return new NearlineStore(properties);
   }
 
+  /** Creates isolated gateway properties rooted in JUnit's temp directory. */
   private GatewayProperties properties() {
     GatewayProperties properties=new GatewayProperties();
     properties.setNearlineRoot(temp);
@@ -219,6 +242,7 @@ class NearlineStoreTest {
     return properties;
   }
 
+  /** Converts readable test text into an upload stream. */
   private ByteArrayInputStream bytes(String value) {
     return new ByteArrayInputStream(value.getBytes(StandardCharsets.UTF_8));
   }

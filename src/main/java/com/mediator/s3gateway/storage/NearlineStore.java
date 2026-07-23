@@ -36,17 +36,25 @@ import org.springframework.stereotype.Service;
 import com.mediator.s3gateway.config.GatewayProperties;
 import com.mediator.s3gateway.exception.S3Exception;
 
+/**
+ * Owns physical bucket directories and object files on the nearline disk.
+ *
+ * <p>It resolves bucket aliases to categories, prevents path traversal,
+ * validates checksums and publishes completed uploads atomically when possible.
+ */
 @Service
 public class NearlineStore {
 
     private final GatewayProperties properties;
     private final Map<Path, Object> objectLocks = new ConcurrentHashMap<>();
 
+    /** Creates the store from the configured NLD root and bucket mappings. */
     public NearlineStore(GatewayProperties properties) {
         this.properties = properties;
     }
 
-    public String category(String bucket) {//relove bucket to category
+    /** Resolves a public bucket name to its physical NLD category. */
+    public String category(String bucket) {
         validateBucket(bucket);
         String category = properties.getBuckets().get(bucket);
         if (category == null) {
@@ -59,7 +67,8 @@ public class NearlineStore {
         return category;
     }
 
-   public Set<String> buckets() {//List all buckets by reading the nearline root directory and matching with configured buckets
+   /** Lists bucket aliases from configuration and visible NLD directories. */
+   public Set<String> buckets() {
     Set<String> result = new TreeSet<>(properties.getBuckets().keySet());
     Path root = properties.getNearlineRoot().toAbsolutePath().normalize();
     
@@ -85,7 +94,8 @@ public class NearlineStore {
     return Collections.unmodifiableSet(result);
 }
 
-    public synchronized String createBucket(String bucket) throws IOException {//Create a new bucket by creating a directory on the nearline root
+    /** Creates a bucket by creating its category directory on the NLD. */
+    public synchronized String createBucket(String bucket) throws IOException {
         validateBucket(bucket);
         String category = properties.getBuckets().getOrDefault(bucket, dynamicCategory(bucket));
         Path directory = categoryPath(category);
@@ -99,7 +109,8 @@ public class NearlineStore {
         return category;
     }
 
-    public synchronized void deleteBucket(String bucket) throws IOException {//Delete a bucket by removing its directory from the nearline root
+    /** Deletes an empty bucket directory and rejects non-empty buckets. */
+    public synchronized void deleteBucket(String bucket) throws IOException {
         String category = category(bucket);
         Path categoryDir = categoryPath(category);
 
@@ -113,11 +124,13 @@ public class NearlineStore {
         }
     }
 
-    public void delete(String bucket, String key) throws IOException {//Delete an object by deleting the file corresponding to the key in the bucket's category directory
+    /** Deletes an existing object resolved from its bucket alias and key. */
+    public void delete(String bucket, String key) throws IOException {
         Files.deleteIfExists(existing(bucket, key));
     }
 
-    public void deleteObject(String category, String key) throws IOException {//Delete an object by deleting the file corresponding to the key in the specified category directory
+    /** Deletes an object when the caller already has its category name. */
+    public void deleteObject(String category, String key) throws IOException {
         Path base = categoryPath(category);
         Path result = base.resolve(key).normalize();
         if (result.startsWith(base)) {
@@ -125,17 +138,20 @@ public class NearlineStore {
         }
     }
 
-    private void validateBucket(String bucket) {//Validate the bucket name against S3 naming rules
+    /** Validates the basic lowercase S3 bucket-name shape and length. */
+    private void validateBucket(String bucket) {
         if (bucket == null || !bucket.matches("[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")) {
             throw new S3Exception(400, "InvalidBucketName", "The specified bucket is not valid", bucket);
         }
     }
 
-    private String dynamicCategory(String bucket) {//Generate a category name from the bucket name by converting to uppercase and replacing invalid characters
+    /** Converts an unmapped bucket name into its default category form. */
+    private String dynamicCategory(String bucket) {
         return bucket.toUpperCase(Locale.ROOT).replace('-', '_').replace('.', '_');
     }
 
-    private Path categoryPath(String category) {//Resolve the category directory path under the nearline root and ensure it does not escape the root
+    /** Resolves a category below the NLD root and rejects escaping paths. */
+    private Path categoryPath(String category) {
         Path root = properties.getNearlineRoot().toAbsolutePath().normalize();
         Path result = root.resolve(category).normalize();
         if (!result.startsWith(root) || result.equals(root)) {
@@ -144,11 +160,13 @@ public class NearlineStore {
         return result;
     }
 
-    Path categoryRoot(String bucket) {//Resolve the root directory path for a given bucket
+    /** Resolves the physical category root for a public bucket alias. */
+    Path categoryRoot(String bucket) {
         return categoryPath(category(bucket));
     }
 
-    public Path object(String bucket, String key) {//Resolve the file path for a given object key in a bucket's category directory, ensuring it does not escape the category root
+    /** Resolves an object path and rejects empty keys or path traversal. */
+    public Path object(String bucket, String key) {
         if (key == null || key.isBlank()) {
             throw new S3Exception(400, "InvalidRequest", "An object key is required", bucket);
         }
@@ -160,7 +178,8 @@ public class NearlineStore {
         return result;
     }
 
-    public Path existing(String bucket, String key) {//Resolve the file path for a given object key in a bucket's category directory, ensuring it does not escape the category root
+    /** Resolves an object and requires it to exist as a regular file. */
+    public Path existing(String bucket, String key) {
         Path path = object(bucket, key);
         if (!Files.isRegularFile(path)) {
             throw new S3Exception(404, "NoSuchKey", "The specified key does not exist", key);
@@ -168,14 +187,17 @@ public class NearlineStore {
         return path;
     }
 
+    /** Convenience PUT without checksums or conditional headers. */
     public Stored put(String bucket, String key, InputStream input, long expectedLength) throws IOException {
         return put(bucket, key, input, expectedLength, Map.of(), null, null);
     }
 
+    /** Convenience PUT with checksums but no conditional headers. */
     public Stored put(String bucket, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums) throws IOException {
         return put(bucket, key, input, expectedLength, clientChecksums, null, null);
     }
 
+    /** Stores one object with optional checksums and write preconditions. */
     public Stored put(String bucket, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums, String ifMatch, String ifNoneMatch) throws IOException {
         validateChecksumHeaders(clientChecksums, key);
 
@@ -187,6 +209,7 @@ public class NearlineStore {
             Files.createDirectories(parentDir);
         }
 
+        // Serialize condition evaluation and replacement for this object path.
         Object lock = objectLocks.computeIfAbsent(destination, p -> new Object());
         synchronized (lock) {
             validateWriteConditions(destination, key, ifMatch, ifNoneMatch);
@@ -194,6 +217,9 @@ public class NearlineStore {
         }
     }
 
+    /**
+     * Streams to a staging file, verifies the content, then publishes it.
+     */
     private Stored writeObject(Path destination, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums) throws IOException {
         Path staging = destination.getParent().resolve("." + destination.getFileName() + "." + UUID.randomUUID() + ".uploading");
         long written = 0;
@@ -204,6 +230,7 @@ public class NearlineStore {
         Checksum crc32 = clientChecksums.containsKey("x-amz-checksum-crc32") ? new CRC32() : null;
         Checksum crc32c = clientChecksums.containsKey("x-amz-checksum-crc32c") ? new CRC32C() : null;
 
+        // Calculate all requested checksums during the same pass that saves bytes.
         try (InputStream in = input; OutputStream out = Files.newOutputStream(staging, StandardOpenOption.CREATE_NEW)) {
             byte[] buffer = new byte[1024 * 128];
             int n;
@@ -258,7 +285,8 @@ public class NearlineStore {
         return new Stored(destination, written, hex(md5), Files.getLastModifiedTime(destination), responseChecksums);
     }
 
-    public List<Entry> list(String bucket, String prefix) throws IOException {//list objects 
+    /** Recursively lists object files, optionally filtered by key prefix. */
+    public List<Entry> list(String bucket, String prefix) throws IOException {
         Path root = categoryRoot(bucket);
         if (!Files.exists(root)) {
             return List.of();
@@ -278,15 +306,18 @@ public class NearlineStore {
         }
     }
 
+    /** Result returned after a successful NLD object write. */
     public record Stored(Path path, long length, String etag, FileTime lastModified, Map<String, String> checksums) {
         public Stored {
             checksums = Map.copyOf(checksums);
         }
     }
 
+    /** Minimal object information consumed by ListObjectsV2. */
     public record Entry(String key, long length, FileTime lastModified) {
     }
 
+    /** Obtains a digest algorithm that is required from the JDK. */
     private static MessageDigest messageDigest(String algorithm) {
         try {
             return MessageDigest.getInstance(algorithm);
@@ -295,6 +326,7 @@ public class NearlineStore {
         }
     }
 
+    /** Validates checksum Base64 syntax and decoded byte lengths. */
     private static void validateChecksumHeaders(Map<String, String> checksums, String key) {
         Map<String, Integer> lengths = Map.of(
                 "content-md5", 16,
@@ -317,6 +349,7 @@ public class NearlineStore {
         });
     }
 
+    /** Compares client checksum values with checksums of received bytes. */
     private static void verifyChecksums(Map<String, String> expected, Map<String, byte[]> calculated, String key) {
         expected.forEach((name, value) -> {
             byte[] supplied = Base64.getDecoder().decode(value);
@@ -326,6 +359,7 @@ public class NearlineStore {
         });
     }
 
+    /** Applies PutObject If-Match and If-None-Match conditions. */
     private static void validateWriteConditions(Path destination, String key, String ifMatch, String ifNoneMatch) throws IOException {
         boolean exists = Files.isRegularFile(destination);
         if (ifMatch != null && !ifMatch.isBlank()) {
@@ -347,6 +381,7 @@ public class NearlineStore {
         }
     }
 
+    /** Removes weak-validator syntax and quotes from an ETag. */
     private static String normalizeEtag(String value) {
         String result = value.trim();
         if (result.startsWith("W/")) {
@@ -358,6 +393,7 @@ public class NearlineStore {
         return result;
     }
 
+    /** Calculates the MD5-based ETag of an existing NLD file. */
     private static String fileEtag(Path path) throws IOException {
         MessageDigest digest = messageDigest("MD5");
         try (InputStream in = Files.newInputStream(path)) {
@@ -370,11 +406,13 @@ public class NearlineStore {
         return hex(digest.digest());
     }
 
+    /** Converts a 32-bit CRC value into network-order bytes. */
     private static byte[] checksumBytes(Checksum checksum) {
         long value = checksum.getValue();
         return new byte[]{(byte) (value >>> 24), (byte) (value >>> 16), (byte) (value >>> 8), (byte) value};
     }
 
+    /** Renders digest bytes as lowercase hexadecimal text. */
     private static String hex(byte[] bytes) {
         StringBuilder s = new StringBuilder();
         for (byte b : bytes) {
