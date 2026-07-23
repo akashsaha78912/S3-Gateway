@@ -243,20 +243,8 @@ public class S3Controller {
         ObjectMetadataStore.ObjectHeaders objectHeaders = requestHeaders(request);
         Map<String, String> checksums = clientChecksums(request);
 
-        // Unwrap AWS SigV4 chunked encoding if present
         InputStream inputStream = request.getInputStream();
-        String contentSha256 = request.getHeader("x-amz-content-sha256");
-        String contentEncoding = request.getHeader(HttpHeaders.CONTENT_ENCODING);
-        boolean isChunked = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".equals(contentSha256)
-                || (contentEncoding != null && contentEncoding.contains("aws-chunked"));
-
-        log.debug("Chunking Inspection - isChunked: {}, x-amz-content-sha256: {}, Content-Length: {}", isChunked, contentSha256, request.getContentLengthLong());
-
-        if (isChunked) {
-            inputStream = new AwsChunkedInputStream(inputStream);
-        }
-
-        long expectedLength = isChunked ? -1L : request.getContentLengthLong();
+        long expectedLength = request.getContentLengthLong();
         NearlineStore.Stored stored = store.put(
                 bucket,
                 actual,
@@ -484,82 +472,4 @@ public class S3Controller {
         }
     }
 
-    private static class AwsChunkedInputStream extends FilterInputStream {
-
-        private long currentChunkRemaining = 0;
-        private boolean isEof = false;
-
-        AwsChunkedInputStream(InputStream in) {
-            super(in);
-        }
-
-        @Override
-        public int read() throws IOException {
-            byte[] b = new byte[1];
-            int n = read(b, 0, 1);
-            return n == -1 ? -1 : (b[0] & 0xFF);
-        }
-
-        @Override
-        public int read(byte[] b, int off, int len) throws IOException {
-            if (isEof) {
-                return -1;
-            }
-
-            if (currentChunkRemaining == 0) {
-                readNextChunkHeader();
-                if (isEof) {
-                    return -1;
-                }
-            }
-
-            int bytesToRead = (int) Math.min(len, currentChunkRemaining);
-            int bytesRead = super.read(b, off, bytesToRead);
-
-            if (bytesRead > 0) {
-                currentChunkRemaining -= bytesRead;
-                if (currentChunkRemaining == 0) {
-                    readCRLF();
-                }
-            }
-
-            return bytesRead;
-        }
-
-        private void readNextChunkHeader() throws IOException {
-            StringBuilder header = new StringBuilder();
-            int ch;
-            while ((ch = super.read()) != -1) {
-                if (ch == '\r') {
-                    super.read(); // consume '\n'
-                    break;
-                }
-                header.append((char) ch);
-            }
-
-            String headerLine = header.toString().trim();
-            if (headerLine.isEmpty()) {
-                isEof = true;
-                return;
-            }
-
-            String hexSize = headerLine.split(";")[0].trim();
-            try {
-                currentChunkRemaining = Long.parseLong(hexSize, 16);
-                if (currentChunkRemaining == 0) {
-                    isEof = true;
-                    readCRLF();
-                }
-            } catch (NumberFormatException e) {
-                throw new IOException("Malformed aws-chunked size header: " + hexSize, e);
-            }
-        }
-
-        private void readCRLF() throws IOException {
-            int r = super.read();
-            if (r == '\r') {
-                super.read(); // consume '\n'
-            }
-        }
-    }
 }
