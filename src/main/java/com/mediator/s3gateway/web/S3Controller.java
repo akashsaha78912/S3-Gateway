@@ -18,6 +18,8 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -46,6 +48,8 @@ import jakarta.servlet.http.HttpServletRequest;
 @RestController
 public class S3Controller {
 
+    private static final Logger log = LoggerFactory.getLogger(S3Controller.class);
+
     private final NearlineStore store;
     private final RequestRegistry requests;
     private final ObjectMetadataStore metadata;
@@ -57,7 +61,10 @@ public class S3Controller {
     }
 
     @GetMapping(value = "/", produces = MediaType.APPLICATION_XML_VALUE)//List of Buckets
-    public String listBuckets() {
+    public String listBuckets(HttpServletRequest request) {
+        logRequest(request);
+        log.info("Executing ListBuckets operation");
+
         StringBuilder x = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Buckets>");
         for (String b : store.buckets()) {
             x.append("<Bucket><Name>").append(xml(b)).append("</Name></Bucket>");
@@ -66,13 +73,19 @@ public class S3Controller {
     }
 
     @PutMapping("/{bucket}") //create bucket
-    public ResponseEntity<Void> createBucket(@PathVariable String bucket) throws IOException {
+    public ResponseEntity<Void> createBucket(@PathVariable String bucket, HttpServletRequest request) throws IOException {
+        logRequest(request);
+        log.info("Executing CreateBucket operation for bucket: {}", bucket);
+
         store.createBucket(bucket);
         return ResponseEntity.ok().header(HttpHeaders.LOCATION, "/" + bucket).build();
     }
 
     @DeleteMapping("/{bucket}")//delete bucket disable as for now
-    public ResponseEntity<String> deleteBucket(@PathVariable String bucket) {
+    public ResponseEntity<String> deleteBucket(@PathVariable String bucket, HttpServletRequest request) {
+        logRequest(request);
+        log.warn("Executing DeleteBucket (Disabled operation) for bucket: {}", bucket);
+
         String xmlError = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Error>"
                 + "<Code>AccessDenied</Code>"
@@ -87,8 +100,10 @@ public class S3Controller {
     }
 
     @DeleteMapping("/{bucket}/{*key}")//delete object disable as for now
-    public ResponseEntity<String> deleteObject(@PathVariable String bucket, @PathVariable String key) {
+    public ResponseEntity<String> deleteObject(@PathVariable String bucket, @PathVariable String key, HttpServletRequest request) {
+        logRequest(request);
         String actual = clean(key);
+        log.warn("Executing DeleteObject (Disabled operation) for bucket: {}, key: {}", bucket, actual);
 
         String xmlError = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
                 + "<Error>"
@@ -109,7 +124,13 @@ public class S3Controller {
             @RequestParam(required = false) String delimiter,
             @RequestParam(defaultValue = "1000") int maxKeys,
             @RequestParam(required = false, name = "start-after") String after,
-            @RequestParam(required = false, name = "continuation-token") String token) throws IOException {
+            @RequestParam(required = false, name = "continuation-token") String token,
+            HttpServletRequest request) throws IOException {
+
+        logRequest(request);
+        log.info("Executing ListObjectsV2 - Bucket: {}, Prefix: '{}', Delimiter: '{}', MaxKeys: {}, StartAfter: '{}', Token: '{}'",
+                bucket, prefix, delimiter, maxKeys, after, token);
+
         store.category(bucket);
         String pfx = prefix == null ? "" : prefix;
         List<NearlineStore.Entry> all = store.list(bucket, prefix).stream()
@@ -159,15 +180,25 @@ public class S3Controller {
     }
 
     @RequestMapping(value = "/{bucket}/{*key}", method = RequestMethod.HEAD)// head object
-    public ResponseEntity<Void> head(@PathVariable String bucket, @PathVariable String key) throws IOException {
+    public ResponseEntity<Void> head(@PathVariable String bucket, @PathVariable String key, HttpServletRequest request) throws IOException {
+        logRequest(request);
         String actual = clean(key);
+        log.info("Executing HeadObject - Bucket: {}, Key: {}", bucket, actual);
+
         Path p = store.existing(bucket, actual);
         return headers(p, metadata.get(bucket, actual)).build();
     }
 
     @GetMapping("/{bucket}/{*key}")//get object after restoring
-    public ResponseEntity<InputStreamResource> get(@PathVariable String bucket, @PathVariable String key, @RequestHeader(value = "Range", required = false) String range) throws IOException {
-        Path p = store.existing(bucket, clean(key));
+    public ResponseEntity<InputStreamResource> get(@PathVariable String bucket,
+            @PathVariable String key,
+            @RequestHeader(value = "Range", required = false) String range,
+            HttpServletRequest request) throws IOException {
+        logRequest(request);
+        String actual = clean(key);
+        log.info("Executing GetObject - Bucket: {}, Key: {}, Range Header: {}", bucket, actual, range);
+
+        Path p = store.existing(bucket, actual);
         long size = Files.size(p), start = 0, end = size - 1;
         HttpStatus status = HttpStatus.OK;
         if (range != null) {
@@ -182,7 +213,7 @@ public class S3Controller {
         HttpHeaders h = new HttpHeaders();
         h.setContentLength(count);
         h.setLastModified(Files.getLastModifiedTime(p).toMillis());
-        ObjectMetadataStore.Metadata m = metadata.get(bucket, clean(key));
+        ObjectMetadataStore.Metadata m = metadata.get(bucket, actual);
         applyObjectHeaders(h, m);
         h.set(HttpHeaders.ACCEPT_RANGES, "bytes");
         h.set("x-amz-storage-class", m.storageClass());
@@ -193,69 +224,19 @@ public class S3Controller {
         return new ResponseEntity<>(new InputStreamResource(new BoundedInputStream(in, count)), h, status);
     }
 
-    // @PutMapping("/{bucket}/{*key}")
-    // public ResponseEntity<?> put(@PathVariable String bucket,
-    //         @PathVariable String key,
-    //         @RequestHeader(value = "x-amz-storage-class", defaultValue = "STANDARD") String storageClass,
-    //         @RequestHeader(value = "x-amz-copy-source", required = false) String copySource,
-    //         HttpServletRequest request) throws IOException {
-    //     String actual = clean(key);
-
-    //     // Handle CopyObject Operation
-    //     if (copySource != null && !copySource.isBlank()) {
-    //         return handleCopyObject(bucket, actual, copySource, storageClass);
-    //     }
-
-    //     storageClass = storageClass.toUpperCase(Locale.ROOT);
-    //     if (!Set.of("STANDARD", "GLACIER", "DEEP_ARCHIVE").contains(storageClass)) {
-    //         throw new S3Exception(400, "InvalidStorageClass", "Supported storage classes are STANDARD, GLACIER, DEEP_ARCHIVE", storageClass);
-    //     }
-
-    //     ObjectMetadataStore.ObjectHeaders objectHeaders = requestHeaders(request);
-    //     Map<String, String> checksums = clientChecksums(request);
-
-    //     // Unwrap AWS SigV4 chunked encoding if present
-    //     InputStream inputStream = request.getInputStream();
-    //     String contentSha256 = request.getHeader("x-amz-content-sha256");
-    //     String contentEncoding = request.getHeader(HttpHeaders.CONTENT_ENCODING);
-    //     boolean isChunked = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".equals(contentSha256)
-    //             || (contentEncoding != null && contentEncoding.contains("aws-chunked"));
-
-    //     if (isChunked) {
-    //         inputStream = new AwsChunkedInputStream(inputStream);
-    //     }
-
-    //     long expectedLength = isChunked ? -1L : request.getContentLengthLong();
-
-    //     NearlineStore.Stored stored = store.put(bucket, actual, inputStream, expectedLength, checksums, request.getHeader(HttpHeaders.IF_MATCH), request.getHeader(HttpHeaders.IF_NONE_MATCH));
-    //     metadata.put(bucket, actual, storageClass, objectHeaders);
-    //     requests.submit("ARCHIVE", bucket, actual);
-
-    //     // Format ETag properly with escaped double-quotes
-    //     String rawEtag = stored.etag().replaceAll("\"", "");
-    //     ResponseEntity.BodyBuilder response = ResponseEntity.ok().eTag("\"" + rawEtag + "\"");
-
-    //     stored.checksums().forEach(response::header);
-    //     if (!stored.checksums().isEmpty()) {
-    //         response.header("x-amz-checksum-type", "FULL_OBJECT");
-    //     }
-    //     return response.build();
-    // }
-@PutMapping("/{bucket}/{*key}")//put object 
+    @PutMapping("/{bucket}/{*key}")//put object 
     public ResponseEntity<?> put(@PathVariable String bucket,
-                                @PathVariable String key,
-                                @RequestHeader(value = "x-amz-storage-class", defaultValue = "STANDARD") String storageClass,
-                                @RequestHeader(value = "x-amz-copy-source", required = false) String copySource,
-                                HttpServletRequest request) throws IOException {
+            @PathVariable String key,
+            @RequestHeader(value = "x-amz-storage-class", defaultValue = "STANDARD") String storageClass,
+            HttpServletRequest request) throws IOException {
+        logRequest(request);
         String actual = clean(key);
 
-        // 1. Handle CopyObject Operation
-        if (copySource != null && !copySource.isBlank()) {
-            return handleCopyObject(bucket, actual, copySource, storageClass);
-        }
+        log.info("Executing PutObject - Bucket: {}, Key: {}, StorageClass: {}", bucket, actual, storageClass);
 
         storageClass = storageClass.toUpperCase(Locale.ROOT);
         if (!Set.of("STANDARD", "GLACIER", "DEEP_ARCHIVE").contains(storageClass)) {
+            log.error("Invalid Storage Class specified: {}", storageClass);
             throw new S3Exception(400, "InvalidStorageClass", "Supported storage classes are STANDARD, GLACIER, DEEP_ARCHIVE", storageClass);
         }
 
@@ -269,29 +250,56 @@ public class S3Controller {
         boolean isChunked = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".equals(contentSha256)
                 || (contentEncoding != null && contentEncoding.contains("aws-chunked"));
 
+        log.debug("Chunking Inspection - isChunked: {}, x-amz-content-sha256: {}, Content-Length: {}", isChunked, contentSha256, request.getContentLengthLong());
+
         if (isChunked) {
             inputStream = new AwsChunkedInputStream(inputStream);
         }
 
         long expectedLength = isChunked ? -1L : request.getContentLengthLong();
+        NearlineStore.Stored stored = store.put(
+                bucket,
+                actual,
+                inputStream,
+                expectedLength,
+                checksums,
+                request.getHeader(HttpHeaders.IF_MATCH),
+                request.getHeader(HttpHeaders.IF_NONE_MATCH)
+        );
 
-        NearlineStore.Stored stored = store.put(bucket, actual, inputStream, expectedLength, checksums, request.getHeader(HttpHeaders.IF_MATCH), request.getHeader(HttpHeaders.IF_NONE_MATCH));
+        // Add this:
+        log.info(
+                "PUT received. Content-Length: {}, saved to: {}",
+                stored.length(),
+                stored.path()
+        );
+
         metadata.put(bucket, actual, storageClass, objectHeaders);
         requests.submit("ARCHIVE", bucket, actual);
+        String rawEtag = stored.etag().replace("\"", "");
 
-        // Format ETag properly with escaped double-quotes
-        String rawEtag = stored.etag().replaceAll("\"", "");
-        ResponseEntity.BodyBuilder response = ResponseEntity.ok().eTag("\"" + rawEtag + "\"");
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
+                .contentLength(0)
+                .eTag("\"" + rawEtag + "\"");
 
         stored.checksums().forEach(response::header);
+
         if (!stored.checksums().isEmpty()) {
             response.header("x-amz-checksum-type", "FULL_OBJECT");
         }
+
         return response.build();
     }
+
     @PostMapping(value = "/{bucket}/{*key}", params = "restore")//restore request for object
-    public ResponseEntity<Void> restore(@PathVariable String bucket, @PathVariable String key, @RequestBody(required = false) String restoreRequest) {
+    public ResponseEntity<Void> restore(@PathVariable String bucket,
+            @PathVariable String key,
+            @RequestBody(required = false) String restoreRequest,
+            HttpServletRequest request) {
+        logRequest(request);
         String actual = clean(key);
+        log.info("Executing RestoreObject - Bucket: {}, Key: {}, Restore Body: {}", bucket, actual, restoreRequest);
+
         store.existing(bucket, actual);
         ObjectMetadataStore.Metadata m = metadata.get(bucket, actual);
         if (!"STANDARD".equals(m.storageClass())) {
@@ -302,7 +310,10 @@ public class S3Controller {
     }
 
     @PostMapping(value = "/{bucket}", params = "delete", produces = MediaType.APPLICATION_XML_VALUE)// multi delete objects in bucket
-    public String multiDelete(@PathVariable String bucket, @RequestBody String requestXml) throws IOException {
+    public String multiDelete(@PathVariable String bucket, @RequestBody String requestXml, HttpServletRequest request) throws IOException {
+        logRequest(request);
+        log.info("Executing MultiDelete - Bucket: {}, Body XML: {}", bucket, requestXml);
+
         // Parse key tags from XML body (<Key>sample.txt</Key>)
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("<Key>(.*?)</Key>").matcher(requestXml);
         StringBuilder xml = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
@@ -313,69 +324,37 @@ public class S3Controller {
                 Path p = store.object(bucket, key);
                 Files.deleteIfExists(p);
                 xml.append("<Deleted><Key>").append(xml(key)).append("</Key></Deleted>");
+                log.debug("MultiDelete: Successfully deleted object key: {}", key);
             } catch (Exception e) {
+                log.error("MultiDelete: Failed to delete object key: {}", key, e);
                 xml.append("<Error><Key>").append(xml(key)).append("</Key><Code>InternalError</Code></Error>");
             }
         }
         return xml.append("</DeleteResult>").toString();
     }
 
-    // private ResponseEntity<String> handleCopyObject(String destBucket, String destKey, String copySource, String storageClass) throws IOException {
-    //     String cleanSource = copySource.startsWith("/") ? copySource.substring(1) : copySource;
-    //     String[] parts = cleanSource.split("/", 2);
-    //     if (parts.length < 2) {
-    //         throw new S3Exception(400, "InvalidRequest", "Invalid x-amz-copy-source header", copySource);
-    //     }
-    //     String srcBucket = parts[0];
-    //     String srcKey = parts[1];
-
-    //     Path srcPath = store.existing(srcBucket, srcKey);
-    //     ObjectMetadataStore.Metadata srcMeta = metadata.get(srcBucket, srcKey);
-
-    //     try (InputStream in = Files.newInputStream(srcPath)) {
-    //         NearlineStore.Stored stored = store.put(destBucket, destKey, in, Files.size(srcPath), Map.of(), null, null);
-    //         metadata.put(destBucket, destKey, storageClass, srcMeta.headers());
-    //     }
-
-    //     String xmlResponse = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><CopyObjectResult><LastModified>"
-    //             + DateTimeFormatter.ISO_INSTANT.format(FileTime.fromMillis(System.currentTimeMillis()).toInstant())
-    //             + "</LastModified><ETag>\"" + srcKey.hashCode() + "\"</ETag></CopyObjectResult>";
-
-    //     return ResponseEntity.ok().contentType(MediaType.APPLICATION_XML).body(xmlResponse);
-    // }
-private ResponseEntity<String> handleCopyObject(String destBucket, String destKey, String copySource, String storageClass) throws IOException {
-        // 1. URL decode the header (handles %20 spaces and encoded path characters)
-        String decodedSource = java.net.URLDecoder.decode(copySource, java.nio.charset.StandardCharsets.UTF_8);
-        String cleanSource = decodedSource.startsWith("/") ? decodedSource.substring(1) : decodedSource;
-
-        String[] parts = cleanSource.split("/", 2);
-        if (parts.length < 2) {
-            throw new S3Exception(400, "InvalidRequest", "Invalid x-amz-copy-source header", copySource);
+    /**
+     * Inspects and logs all incoming HTTP request details generated by SDKs.
+     */
+    private void logRequest(HttpServletRequest request) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n================ INCOMING SDK REQUEST ================");
+        sb.append("\nHTTP Method : ").append(request.getMethod());
+        sb.append("\nRequest URI : ").append(request.getRequestURI());
+        if (request.getQueryString() != null) {
+            sb.append("\nQuery String: ").append(request.getQueryString());
         }
-        String srcBucket = parts[0];
-        String srcKey = parts[1];
+        sb.append("\nHeaders     :");
 
-        Path srcPath = store.existing(srcBucket, srcKey);
-        ObjectMetadataStore.Metadata srcMeta = metadata.get(srcBucket, srcKey);
-
-        NearlineStore.Stored stored;
-        try (InputStream in = Files.newInputStream(srcPath)) {
-            stored = store.put(destBucket, destKey, in, Files.size(srcPath), Map.of(), null, null);
-            metadata.put(destBucket, destKey, storageClass, srcMeta.headers());
+        Enumeration<String> headerNames = request.getHeaderNames();
+        while (headerNames != null && headerNames.hasMoreElements()) {
+            String name = headerNames.nextElement();
+            sb.append("\n  ").append(name).append(" = ").append(request.getHeader(name));
         }
-
-        // 2. Format proper ETag with escaped quotes and standard S3 XML namespace
-        String formattedEtag = "\"" + stored.etag().replaceAll("\"", "") + "\"";
-        String isoTimestamp = DateTimeFormatter.ISO_INSTANT.format(FileTime.fromMillis(System.currentTimeMillis()).toInstant());
-
-        String xmlResponse = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<CopyObjectResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
-                + "<LastModified>" + isoTimestamp + "</LastModified>"
-                + "<ETag>" + formattedEtag + "</ETag>"
-                + "</CopyObjectResult>";
-
-        return ResponseEntity.ok().contentType(MediaType.APPLICATION_XML).body(xmlResponse);
+        sb.append("\n======================================================");
+        log.info(sb.toString());
     }
+
     private ResponseEntity.BodyBuilder headers(Path p, ObjectMetadataStore.Metadata m) throws IOException {
         HttpHeaders h = new HttpHeaders();
         applyObjectHeaders(h, m);

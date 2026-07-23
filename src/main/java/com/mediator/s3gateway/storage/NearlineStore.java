@@ -1,3 +1,4 @@
+
 package com.mediator.s3gateway.storage;
 
 import java.io.File;
@@ -21,7 +22,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
@@ -40,65 +40,69 @@ import com.mediator.s3gateway.exception.S3Exception;
 public class NearlineStore {
 
     private final GatewayProperties properties;
-    private final Map<String, String> dynamicBuckets = new LinkedHashMap<>();
     private final Map<Path, Object> objectLocks = new ConcurrentHashMap<>();
 
     public NearlineStore(GatewayProperties properties) {
         this.properties = properties;
-        loadDynamicBuckets();
     }
 
-    public String category(String bucket) {
+    public String category(String bucket) {//relove bucket to category
         validateBucket(bucket);
         String category = properties.getBuckets().get(bucket);
         if (category == null) {
-            category = dynamicBuckets.get(bucket);
+            category = dynamicCategory(bucket);
         }
-        if (category == null || category.isBlank()) {
+        Path categoryDir = categoryPath(category);
+        if (!Files.exists(categoryDir)) {
             throw new S3Exception(404, "NoSuchBucket", "The specified bucket does not exist", bucket);
         }
         return category;
     }
 
-    public Set<String> buckets() {
-        Set<String> result = new TreeSet<>(properties.getBuckets().keySet());
-        result.addAll(dynamicBuckets.keySet());
-        return Collections.unmodifiableSet(result);
+   public Set<String> buckets() {//List all buckets by reading the nearline root directory and matching with configured buckets
+    Set<String> result = new TreeSet<>(properties.getBuckets().keySet());
+    Path root = properties.getNearlineRoot().toAbsolutePath().normalize();
+    
+    if (Files.isDirectory(root)) {
+        try (Stream<Path> stream = Files.list(root)) {
+            stream.filter(Files::isDirectory)
+                  .map(p -> p.getFileName().toString())
+                  .filter(name -> !name.startsWith("."))
+                  .forEach(category -> {
+                      // Reverse lookup in properties, or format directory back to S3 bucket name format
+                      String matchedBucket = properties.getBuckets().entrySet().stream()
+                              .filter(e -> e.getValue().equalsIgnoreCase(category))
+                              .map(Map.Entry::getKey)
+                              .findFirst()
+                              .orElseGet(() -> category.toLowerCase(Locale.ROOT).replace('_', '-'));
+                      
+                      result.add(matchedBucket);
+                  });
+        } catch (IOException e) {
+            // Ignore unreadable root on list
+        }
     }
+    return Collections.unmodifiableSet(result);
+}
 
-    public synchronized String createBucket(String bucket) throws IOException {
+    public synchronized String createBucket(String bucket) throws IOException {//Create a new bucket by creating a directory on the nearline root
         validateBucket(bucket);
-        if (properties.getBuckets().containsKey(bucket) || dynamicBuckets.containsKey(bucket)) {
+        String category = properties.getBuckets().getOrDefault(bucket, dynamicCategory(bucket));
+        Path directory = categoryPath(category);
+
+        if (Files.exists(directory)) {
             throw new S3Exception(409, "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it", bucket);
         }
-        String category = dynamicCategory(bucket);
-        if (properties.getBuckets().containsValue(category) || dynamicBuckets.containsValue(category)) {
-            throw new S3Exception(409, "BucketAlreadyExists", "The requested bucket name is not available", bucket);
-        }
-        Path directory = categoryPath(category);
-        boolean existed = Files.exists(directory);
+
+        // Directly create directory on NLD disk if not present
         Files.createDirectories(directory);
-        dynamicBuckets.put(bucket, category);
-        try {
-            persistDynamicBuckets();
-        } catch (IOException | RuntimeException e) {
-            dynamicBuckets.remove(bucket);
-            if (!existed) {
-                try {
-                    Files.deleteIfExists(directory);
-                } catch (IOException ignored) {
-                }
-            }
-            throw e;
-        }
         return category;
     }
 
-    public synchronized void deleteBucket(String bucket) throws IOException {
+    public synchronized void deleteBucket(String bucket) throws IOException {//Delete a bucket by removing its directory from the nearline root
         String category = category(bucket);
         Path categoryDir = categoryPath(category);
 
-        // Disallow deletion if files remain inside
         if (Files.exists(categoryDir)) {
             try (Stream<Path> s = Files.list(categoryDir)) {
                 if (s.findAny().isPresent()) {
@@ -107,19 +111,13 @@ public class NearlineStore {
             }
             Files.deleteIfExists(categoryDir);
         }
-
-        // Remove dynamic mapping if applicable
-        if (dynamicBuckets.containsKey(bucket)) {
-            dynamicBuckets.remove(bucket);
-            persistDynamicBuckets();
-        }
     }
 
-    public void delete(String bucket, String key) throws IOException {
+    public void delete(String bucket, String key) throws IOException {//Delete an object by deleting the file corresponding to the key in the bucket's category directory
         Files.deleteIfExists(existing(bucket, key));
     }
 
-    public void deleteObject(String category, String key) throws IOException {
+    public void deleteObject(String category, String key) throws IOException {//Delete an object by deleting the file corresponding to the key in the specified category directory
         Path base = categoryPath(category);
         Path result = base.resolve(key).normalize();
         if (result.startsWith(base)) {
@@ -127,17 +125,17 @@ public class NearlineStore {
         }
     }
 
-    private void validateBucket(String bucket) {
+    private void validateBucket(String bucket) {//Validate the bucket name against S3 naming rules
         if (bucket == null || !bucket.matches("[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")) {
             throw new S3Exception(400, "InvalidBucketName", "The specified bucket is not valid", bucket);
         }
     }
 
-    private String dynamicCategory(String bucket) {
+    private String dynamicCategory(String bucket) {//Generate a category name from the bucket name by converting to uppercase and replacing invalid characters
         return bucket.toUpperCase(Locale.ROOT).replace('-', '_').replace('.', '_');
     }
 
-    private Path categoryPath(String category) {
+    private Path categoryPath(String category) {//Resolve the category directory path under the nearline root and ensure it does not escape the root
         Path root = properties.getNearlineRoot().toAbsolutePath().normalize();
         Path result = root.resolve(category).normalize();
         if (!result.startsWith(root) || result.equals(root)) {
@@ -146,11 +144,11 @@ public class NearlineStore {
         return result;
     }
 
-    Path categoryRoot(String bucket) {
+    Path categoryRoot(String bucket) {//Resolve the root directory path for a given bucket
         return categoryPath(category(bucket));
     }
 
-    public Path object(String bucket, String key) {
+    public Path object(String bucket, String key) {//Resolve the file path for a given object key in a bucket's category directory, ensuring it does not escape the category root
         if (key == null || key.isBlank()) {
             throw new S3Exception(400, "InvalidRequest", "An object key is required", bucket);
         }
@@ -162,7 +160,7 @@ public class NearlineStore {
         return result;
     }
 
-    public Path existing(String bucket, String key) {
+    public Path existing(String bucket, String key) {//Resolve the file path for a given object key in a bucket's category directory, ensuring it does not escape the category root
         Path path = object(bucket, key);
         if (!Files.isRegularFile(path)) {
             throw new S3Exception(404, "NoSuchKey", "The specified key does not exist", key);
@@ -180,8 +178,15 @@ public class NearlineStore {
 
     public Stored put(String bucket, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums, String ifMatch, String ifNoneMatch) throws IOException {
         validateChecksumHeaders(clientChecksums, key);
+
         Path destination = object(bucket, key);
-        Files.createDirectories(destination.getParent());
+        Path parentDir = destination.getParent();
+
+        // Check if missing on NLD disk, then create directory tree
+        if (parentDir != null && !Files.exists(parentDir)) {
+            Files.createDirectories(parentDir);
+        }
+
         Object lock = objectLocks.computeIfAbsent(destination, p -> new Object());
         synchronized (lock) {
             validateWriteConditions(destination, key, ifMatch, ifNoneMatch);
@@ -198,7 +203,7 @@ public class NearlineStore {
         MessageDigest sha512 = clientChecksums.containsKey("x-amz-checksum-sha512") ? messageDigest("SHA-512") : null;
         Checksum crc32 = clientChecksums.containsKey("x-amz-checksum-crc32") ? new CRC32() : null;
         Checksum crc32c = clientChecksums.containsKey("x-amz-checksum-crc32c") ? new CRC32C() : null;
-        
+
         try (InputStream in = input; OutputStream out = Files.newOutputStream(staging, StandardOpenOption.CREATE_NEW)) {
             byte[] buffer = new byte[1024 * 128];
             int n;
@@ -253,7 +258,7 @@ public class NearlineStore {
         return new Stored(destination, written, hex(md5), Files.getLastModifiedTime(destination), responseChecksums);
     }
 
-    public List<Entry> list(String bucket, String prefix) throws IOException {
+    public List<Entry> list(String bucket, String prefix) throws IOException {//list objects 
         Path root = categoryRoot(bucket);
         if (!Files.exists(root)) {
             return List.of();
@@ -266,7 +271,7 @@ public class NearlineStore {
                     throw new UncheckedIOException(e);
                 }
             })
-            .filter(e -> !e.key().startsWith(".gateway-multipart/"))
+           // .filter(e -> !e.key().startsWith(".gateway-multipart/"))
             .filter(e -> prefix == null || e.key().startsWith(prefix))
             .sorted(Comparator.comparing(Entry::key))
             .toList();
@@ -363,45 +368,6 @@ public class NearlineStore {
             }
         }
         return hex(digest.digest());
-    }
-
-    private Path bucketRegistryFile() {
-        return properties.getNearlineRoot().toAbsolutePath().normalize().resolve(".gateway-buckets.properties");
-    }
-
-    private void loadDynamicBuckets() {
-        Path file = bucketRegistryFile();
-        if (!Files.isRegularFile(file)) {
-            return;
-        }
-        Properties saved = new Properties();
-        try (InputStream in = Files.newInputStream(file)) {
-            saved.load(in);
-        } catch (IOException e) {
-            throw new IllegalStateException("Cannot read dynamic bucket registry", e);
-        }
-        for (String bucket : saved.stringPropertyNames()) {
-            validateBucket(bucket);
-            String category = saved.getProperty(bucket);
-            categoryPath(category);
-            dynamicBuckets.put(bucket, category);
-        }
-    }
-
-    private void persistDynamicBuckets() throws IOException {
-        Path file = bucketRegistryFile();
-        Files.createDirectories(file.getParent());
-        Path staging = file.getParent().resolve(".gateway-buckets." + UUID.randomUUID() + ".tmp");
-        Properties saved = new Properties();
-        saved.putAll(dynamicBuckets);
-        try (OutputStream out = Files.newOutputStream(staging, StandardOpenOption.CREATE_NEW)) {
-            saved.store(out, "dynamic S3 bucket to Mediator category mappings");
-        }
-        try {
-            Files.move(staging, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(staging, file, StandardCopyOption.REPLACE_EXISTING);
-        }
     }
 
     private static byte[] checksumBytes(Checksum checksum) {
