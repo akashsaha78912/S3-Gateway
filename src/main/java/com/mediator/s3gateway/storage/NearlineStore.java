@@ -257,7 +257,7 @@ public class NearlineStore {
         byte[] md5 = digest.digest();
         Map<String, byte[]> calculated = new HashMap<>();
         calculated.put("content-md5", md5);
-        calculated.put("x-amz-checksum-md5", md5);
+       // calculated.put("x-amz-checksum-md5", md5);
         if (sha1 != null) calculated.put("x-amz-checksum-sha1", sha1.digest());
         if (sha256 != null) calculated.put("x-amz-checksum-sha256", sha256.digest());
         if (sha512 != null) calculated.put("x-amz-checksum-sha512", sha512.digest());
@@ -366,7 +366,7 @@ public class NearlineStore {
             if (!exists) {
                 throw new S3Exception(404, "NoSuchKey", "The specified key does not exist", key);
             }
-            String supplied = normalizeEtag(ifMatch);
+              String supplied = normalizeEtag(ifMatch);
             if (!"*".equals(supplied) && !MessageDigest.isEqual(supplied.getBytes(java.nio.charset.StandardCharsets.US_ASCII), fileEtag(destination).getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
                 throw new S3Exception(412, "PreconditionFailed", "At least one of the preconditions you specified did not hold", key);
             }

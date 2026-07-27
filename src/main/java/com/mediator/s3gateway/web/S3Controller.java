@@ -48,7 +48,8 @@ import jakarta.servlet.http.HttpServletRequest;
 /**
  * Exposes the supported S3-compatible HTTP operations.
  *
- * <p>This class owns HTTP concerns: route selection, request headers, query
+ * <p>
+ * This class owns HTTP concerns: route selection, request headers, query
  * parameters, XML response construction and HTTP status codes. Physical NLD
  * file access is delegated to {@link NearlineStore}, object metadata is
  * delegated to {@link ObjectMetadataStore}, and archive/restore work is
@@ -94,8 +95,9 @@ public class S3Controller {
     /**
      * Handles CreateBucket: {@code PUT /{bucket}}.
      *
-     * <p>The store validates the S3 bucket name and creates its category
-     * directory below the configured nearline root.
+     * <p>
+     * The store validates the S3 bucket name and creates its category directory
+     * below the configured nearline root.
      */
     @PutMapping("/{bucket}")
     public ResponseEntity<Void> createBucket(@PathVariable String bucket, HttpServletRequest request) throws IOException {
@@ -154,11 +156,11 @@ public class S3Controller {
     }
 
     /**
-     * Handles ListObjectsV2:
-     * {@code GET /{bucket}?list-type=2}.
+     * Handles ListObjectsV2: {@code GET /{bucket}?list-type=2}.
      *
-     * <p>Supports prefix filtering, delimiter grouping, start-after,
-     * continuation tokens and a maximum page size of 1000.
+     * <p>
+     * Supports prefix filtering, delimiter grouping, start-after, continuation
+     * tokens and a maximum page size of 1000.
      */
     @GetMapping(value = "/{bucket}", params = "list-type=2", produces = MediaType.APPLICATION_XML_VALUE)
     public String list(@PathVariable String bucket,
@@ -176,7 +178,8 @@ public class S3Controller {
         // Resolve the bucket first so an unknown bucket returns NoSuchBucket.
         store.category(bucket);
         String pfx = prefix == null ? "" : prefix;
-        List<NearlineStore.Entry> all = store.list(bucket, prefix).stream()
+        List<NearlineStore.Entry> all = store.list(bucket, prefix)//this will check the directory applies the key
+                .stream()
                 .filter(v -> after == null || v.key().compareTo(after) > 0)
                 .toList();
 
@@ -227,7 +230,8 @@ public class S3Controller {
     /**
      * Handles HeadObject: {@code HEAD /{bucket}/{key}}.
      *
-     * <p>Returns the same object headers as GET but does not return file bytes.
+     * <p>
+     * Returns the same object headers as GET but does not return file bytes.
      */
     @RequestMapping(value = "/{bucket}/{*key}", method = RequestMethod.HEAD)
     public ResponseEntity<Void> head(@PathVariable String bucket, @PathVariable String key, HttpServletRequest request) throws IOException {
@@ -242,8 +246,9 @@ public class S3Controller {
     /**
      * Handles GetObject: {@code GET /{bucket}/{key}}.
      *
-     * <p>A request without Range returns 200 and the full file. A valid
-     * single byte range returns 206, Content-Range and only the selected bytes.
+     * <p>
+     * A request without Range returns 200 and the full file. A valid single
+     * byte range returns 206, Content-Range and only the selected bytes.
      */
     @GetMapping("/{bucket}/{*key}")
     public ResponseEntity<InputStreamResource> get(@PathVariable String bucket,
@@ -286,8 +291,9 @@ public class S3Controller {
     /**
      * Handles PutObject: {@code PUT /{bucket}/{key}}.
      *
-     * <p>The request body always lands in the local nearline store first.
-     * After the object write succeeds, this method persists its HTTP metadata,
+     * <p>
+     * The request body always lands in the local nearline store first. After
+     * the object write succeeds, this method persists its HTTP metadata,
      * records the archive request and returns the calculated ETag.
      */
     @PutMapping("/{bucket}/{*key}")
@@ -356,7 +362,8 @@ public class S3Controller {
     /**
      * Handles RestoreObject: {@code POST /{bucket}/{key}?restore}.
      *
-     * <p>The object must already exist. Archived objects receive a temporary
+     * <p>
+     * The object must already exist. Archived objects receive a temporary
      * restore expiry and every accepted request is recorded for later work.
      */
     @PostMapping(value = "/{bucket}/{*key}", params = "restore")
@@ -382,7 +389,8 @@ public class S3Controller {
      * Handles the S3 multi-object delete request:
      * {@code POST /{bucket}?delete}.
      *
-     * <p>Each Key element is processed independently and represented as either
+     * <p>
+     * Each Key element is processed independently and represented as either
      * Deleted or Error in the response XML.
      */
     @PostMapping(value = "/{bucket}", params = "delete", produces = MediaType.APPLICATION_XML_VALUE)
@@ -412,7 +420,8 @@ public class S3Controller {
     /**
      * Logs the incoming method, URI, query string and request headers.
      *
-     * <p>Do not use this unchanged in an environment where headers may contain
+     * <p>
+     * Do not use this unchanged in an environment where headers may contain
      * credentials or other secrets.
      */
     private void logRequest(HttpServletRequest request) {
@@ -472,7 +481,8 @@ public class S3Controller {
     }
 
     /**
-     * Parses a Content-Type value and translates invalid input into an S3 error.
+     * Parses a Content-Type value and translates invalid input into an S3
+     * error.
      */
     private static MediaType contentType(String value) {
         try {
