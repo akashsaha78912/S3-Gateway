@@ -56,14 +56,17 @@ public class NearlineStore {
     /** Resolves a public bucket name to its physical NLD category. */
     public String category(String bucket) {
         validateBucket(bucket);
-        String category = properties.getBuckets().get(bucket);
-        if (category == null) {
-            category = dynamicCategory(bucket);
-        }
-        Path categoryDir = categoryPath(category);
-        if (!Files.exists(categoryDir)) {
-            throw new S3Exception(404, "NoSuchBucket", "The specified bucket does not exist", bucket);
-        }
+         String category = properties.getBuckets().getOrDefault(bucket, bucket);
+              //  String category = properties.getBuckets().get(bucket);
+
+    //     if (category == null) {
+    //         category = dynamicCategory(bucket);
+    //     }
+    //    Path categoryDir = categoryPath(category);
+    
+    //     if (!Files.exists(categoryDir)) {
+    //         throw new S3Exception(404, "NoSuchBucket", "The specified bucket does not exist", bucket);
+    //     }
         return category;
     }
 
@@ -97,7 +100,8 @@ public class NearlineStore {
     /** Creates a bucket by creating its category directory on the NLD. */
     public synchronized String createBucket(String bucket) throws IOException {
         validateBucket(bucket);
-        String category = properties.getBuckets().getOrDefault(bucket, dynamicCategory(bucket));
+        // String category = properties.getBuckets().getOrDefault(bucket, dynamicCategory(bucket));
+        String category = properties.getBuckets().getOrDefault(bucket, bucket);
         Path directory = categoryPath(category);
 
         if (Files.exists(directory)) {
@@ -146,9 +150,9 @@ public class NearlineStore {
     }
 
     /** Converts an unmapped bucket name into its default category form. */
-    private String dynamicCategory(String bucket) {
-        return bucket.toUpperCase(Locale.ROOT).replace('-', '_').replace('.', '_');
-    }
+    // private String dynamicCategory(String bucket) {
+    //     return bucket.toUpperCase(Locale.ROOT).replace('-', '_').replace('.', '_');
+    // }
 
     /** Resolves a category below the NLD root and rejects escaping paths. */
     private Path categoryPath(String category) {

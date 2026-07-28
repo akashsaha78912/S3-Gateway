@@ -449,7 +449,10 @@ public class S3Controller {
     private ResponseEntity.BodyBuilder headers(Path p, ObjectMetadataStore.Metadata m) throws IOException {
         HttpHeaders h = new HttpHeaders();
         applyObjectHeaders(h, m);
-        ResponseEntity.BodyBuilder builder = ResponseEntity.ok().contentLength(Files.size(p)).lastModified(Files.getLastModifiedTime(p).toMillis()).header(HttpHeaders.ACCEPT_RANGES, "bytes").header("x-amz-storage-class", m.storageClass()).header("x-amz-restore", restoreHeader(m));
+        ResponseEntity.BodyBuilder builder = ResponseEntity.ok().contentLength(Files.size(p)).
+        lastModified(Files.getLastModifiedTime(p).toMillis()).
+        header(HttpHeaders.ACCEPT_RANGES, "bytes").header("x-amz-storage-class", m.storageClass())
+        .header("x-amz-restore", restoreHeader(m));
         h.forEach((name, values) -> builder.header(name, values.toArray(String[]::new)));
         return builder;
     }
@@ -504,7 +507,10 @@ public class S3Controller {
                 userMetadata.put(name.toLowerCase(Locale.ROOT), request.getHeader(name));
             }
         }
-        return new ObjectMetadataStore.ObjectHeaders(contentType(request.getContentType()).toString(), request.getHeader(HttpHeaders.CACHE_CONTROL), request.getHeader(HttpHeaders.CONTENT_DISPOSITION), request.getHeader(HttpHeaders.CONTENT_ENCODING), request.getHeader(HttpHeaders.CONTENT_LANGUAGE), request.getHeader(HttpHeaders.EXPIRES), userMetadata);
+        return new ObjectMetadataStore.ObjectHeaders(contentType(request.getContentType()).toString(), request
+        .getHeader(HttpHeaders.CACHE_CONTROL), request.getHeader(HttpHeaders.CONTENT_DISPOSITION), request
+        .getHeader(HttpHeaders.CONTENT_ENCODING), request.getHeader(HttpHeaders.CONTENT_LANGUAGE), request
+        .getHeader(HttpHeaders.EXPIRES), userMetadata);
     }
 
     /**
@@ -512,7 +518,10 @@ public class S3Controller {
      */
     private static Map<String, String> clientChecksums(HttpServletRequest request) {
         Map<String, String> checksums = new LinkedHashMap<>();
-        for (String name : List.of("content-md5", "x-amz-checksum-md5", "x-amz-checksum-crc32", "x-amz-checksum-crc32c", "x-amz-checksum-sha1", "x-amz-checksum-sha256", "x-amz-checksum-sha512")) {
+        for (String name : List.of("content-md5", "x-amz-checksum-md5",
+         "x-amz-checksum-crc32", "x-amz-checksum-crc32c",
+          "x-amz-checksum-sha1", "x-amz-checksum-sha256", 
+          "x-amz-checksum-sha512")) {
             String value = request.getHeader(name);
             if (value != null && !value.isBlank()) {
                 checksums.put(name, value);

@@ -1,8 +1,5 @@
 package com.mediator.s3gateway.storage;
 
-import com.mediator.s3gateway.config.GatewayProperties;
-import com.mediator.s3gateway.exception.S3Exception;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -16,6 +13,9 @@ import java.util.Properties;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Service;
+
+import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.exception.S3Exception;
 
 /**
  * Persists object metadata separately from object bytes.
@@ -104,7 +104,10 @@ public class ObjectMetadataStore {
 
     /** Resolves the safe centralized metadata path for one logical object. */
     private Path file(String bucket, String key) {
-        return properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-metadata").resolve(encodedCategory(store.category(bucket))).resolve(Base64.getUrlEncoder().withoutPadding().encodeToString(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + ".properties");
+        return properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-metadata").
+        resolve(encodedCategory(store.category(bucket))).
+        resolve(Base64.getUrlEncoder().withoutPadding().
+        encodeToString(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + ".properties");
     }
 
     private String encodedCategory(String category) {
