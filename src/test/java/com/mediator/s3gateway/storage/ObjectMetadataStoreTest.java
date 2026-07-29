@@ -1,17 +1,18 @@
 package com.mediator.s3gateway.storage;
 
-import com.mediator.s3gateway.config.GatewayProperties;
-import com.mediator.s3gateway.exception.S3Exception;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-
-import java.nio.file.Path;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.exception.S3Exception;
 /**
  * Regression tests for centralized metadata paths, defaults and size limits.
  */
@@ -33,7 +34,10 @@ class ObjectMetadataStoreTest {
         "video/mp4","max-age=3600","attachment","gzip","en-US",
         "Fri, 18 Jul 2026 12:00:00 GMT",
         Map.of("x-amz-meta-customer-id","1234","x-amz-meta-source","camera"));
-    metadata.put("archive-one","demo.mov","DEEP_ARCHIVE",headers);
+        Instant modified=Instant.parse("2026-07-18T12:00:00Z");
+
+    metadata.put("archive-one","demo.mov","DEEP_ARCHIVE",headers,123456789L,"abc123",FileTime.from(modified));
+
 
     ObjectMetadataStore.Metadata saved=metadata.get("archive-two","demo.mov");
     assertEquals("DEEP_ARCHIVE",saved.storageClass());
@@ -45,6 +49,9 @@ class ObjectMetadataStoreTest {
     assertEquals("Fri, 18 Jul 2026 12:00:00 GMT",saved.headers().expires());
     assertEquals("1234",saved.headers().userMetadata().get("x-amz-meta-customer-id"));
     assertEquals("camera",saved.headers().userMetadata().get("x-amz-meta-source"));
+    assertEquals(123456789L,saved.contentLength());
+    assertEquals("abc123",saved.etag());
+    assertEquals(modified,saved.lastModified());
   }
 
   /** Older metadata without contentType receives the binary default. */

@@ -211,7 +211,12 @@ public class S3Controller {
                 .append(truncated).append("</IsTruncated>");
 
         for (var e : items) {
-            String etag = metadata.get(bucket, e.key()) != null ? "\"" + e.key().hashCode() + "\"" : "\"\"";
+            //  String etag = metadata.get(bucket, e.key()) != null ? "\"" + e.key().hashCode() + "\"" : "\"\"";
+            ObjectMetadataStore.Metadata m = metadata.get(bucket, e.key());
+            String etag = m.etag() == null || m.etag().isBlank()
+                    ? "\"\""
+                    : "\"" + m.etag() + "\"";
+
             x.append("<Contents><Key>").append(xml(e.key())).append("</Key><LastModified>").append(time(e.lastModified()))
                     .append("</LastModified><ETag>").append(etag).append("</ETag><Size>").append(e.length()).append("</Size><StorageClass>")
                     .append(metadata.get(bucket, e.key()).storageClass()).append("</StorageClass></Contents>");
@@ -278,6 +283,14 @@ public class S3Controller {
         h.setLastModified(Files.getLastModifiedTime(p).toMillis());
         ObjectMetadataStore.Metadata m = metadata.get(bucket, actual);
         applyObjectHeaders(h, m);
+        if (m.etag() != null && !m.etag().isBlank()) {
+            h.setETag("\"" + m.etag() + "\"");
+        }
+        long lastModified = m.lastModified() != null
+                ? m.lastModified().toEpochMilli()
+                : Files.getLastModifiedTime(p).toMillis();
+
+        h.setLastModified(lastModified);
         h.set(HttpHeaders.ACCEPT_RANGES, "bytes");
         h.set("x-amz-storage-class", m.storageClass());
         h.set("x-amz-restore", restoreHeader(m));
@@ -339,7 +352,7 @@ public class S3Controller {
         );
 
         // Persist metadata only after the object bytes have been saved successfully.
-        metadata.put(bucket, actual, storageClass, objectHeaders);
+        metadata.put(bucket, actual, storageClass, objectHeaders, stored.length(), stored.etag(), stored.lastModified());
 
         // Record the asynchronous archive hand-off; this does not replace NLD storage.
         requests.submit("ARCHIVE", bucket, actual);
@@ -446,14 +459,58 @@ public class S3Controller {
     /**
      * Builds the common successful HeadObject response headers.
      */
-    private ResponseEntity.BodyBuilder headers(Path p, ObjectMetadataStore.Metadata m) throws IOException {
-        HttpHeaders h = new HttpHeaders();
-        applyObjectHeaders(h, m);
-        ResponseEntity.BodyBuilder builder = ResponseEntity.ok().contentLength(Files.size(p)).
-        lastModified(Files.getLastModifiedTime(p).toMillis()).
-        header(HttpHeaders.ACCEPT_RANGES, "bytes").header("x-amz-storage-class", m.storageClass())
-        .header("x-amz-restore", restoreHeader(m));
-        h.forEach((name, values) -> builder.header(name, values.toArray(String[]::new)));
+    // private ResponseEntity.BodyBuilder headers(Path p, ObjectMetadataStore.Metadata m) throws IOException {
+    //     HttpHeaders h = new HttpHeaders();
+    //     applyObjectHeaders(h, m);
+    //     ResponseEntity.BodyBuilder builder = ResponseEntity.ok().contentLength(Files.size(p)).
+    //     lastModified(Files.getLastModifiedTime(p).toMillis()).
+    //     header(HttpHeaders.ACCEPT_RANGES, "bytes").header("x-amz-storage-class", m.storageClass())
+    //     .header("x-amz-restore", restoreHeader(m));
+    //     h.forEach((name, values) -> builder.header(name, values.toArray(String[]::new)));
+    //     return builder;
+    // }
+    private ResponseEntity.BodyBuilder headers(
+            Path path,
+            ObjectMetadataStore.Metadata metadata
+    ) throws IOException {
+
+        HttpHeaders objectHeaders = new HttpHeaders();
+        applyObjectHeaders(objectHeaders, metadata);
+
+        // Fallbacks allow older metadata files to continue working.
+        long contentLength = metadata.contentLength() >= 0
+                ? metadata.contentLength()
+                : Files.size(path);
+
+        long lastModified = metadata.lastModified() != null
+                ? metadata.lastModified().toEpochMilli()
+                : Files.getLastModifiedTime(path).toMillis();
+
+        ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
+                .contentLength(contentLength)
+                .lastModified(lastModified)
+                .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                .header(
+                        "x-amz-storage-class",
+                        metadata.storageClass()
+                )
+                .header(
+                        "x-amz-restore",
+                        restoreHeader(metadata)
+                );
+
+        if (metadata.etag() != null
+                && !metadata.etag().isBlank()) {
+            builder.eTag("\"" + metadata.etag() + "\"");
+        }
+
+        objectHeaders.forEach((name, values)
+                -> builder.header(
+                        name,
+                        values.toArray(String[]::new)
+                )
+        );
+
         return builder;
     }
 
@@ -508,9 +565,9 @@ public class S3Controller {
             }
         }
         return new ObjectMetadataStore.ObjectHeaders(contentType(request.getContentType()).toString(), request
-        .getHeader(HttpHeaders.CACHE_CONTROL), request.getHeader(HttpHeaders.CONTENT_DISPOSITION), request
-        .getHeader(HttpHeaders.CONTENT_ENCODING), request.getHeader(HttpHeaders.CONTENT_LANGUAGE), request
-        .getHeader(HttpHeaders.EXPIRES), userMetadata);
+                .getHeader(HttpHeaders.CACHE_CONTROL), request.getHeader(HttpHeaders.CONTENT_DISPOSITION), request
+                .getHeader(HttpHeaders.CONTENT_ENCODING), request.getHeader(HttpHeaders.CONTENT_LANGUAGE), request
+                .getHeader(HttpHeaders.EXPIRES), userMetadata);
     }
 
     /**
@@ -519,9 +576,9 @@ public class S3Controller {
     private static Map<String, String> clientChecksums(HttpServletRequest request) {
         Map<String, String> checksums = new LinkedHashMap<>();
         for (String name : List.of("content-md5", "x-amz-checksum-md5",
-         "x-amz-checksum-crc32", "x-amz-checksum-crc32c",
-          "x-amz-checksum-sha1", "x-amz-checksum-sha256", 
-          "x-amz-checksum-sha512")) {
+                "x-amz-checksum-crc32", "x-amz-checksum-crc32c",
+                "x-amz-checksum-sha1", "x-amz-checksum-sha256",
+                "x-amz-checksum-sha512")) {
             String value = request.getHeader(name);
             if (value != null && !value.isBlank()) {
                 checksums.put(name, value);

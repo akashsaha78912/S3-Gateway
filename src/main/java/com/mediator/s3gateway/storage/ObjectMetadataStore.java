@@ -5,6 +5,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
@@ -16,7 +17,6 @@ import org.springframework.stereotype.Service;
 
 import com.mediator.s3gateway.config.GatewayProperties;
 import com.mediator.s3gateway.exception.S3Exception;
-
 /**
  * Persists object metadata separately from object bytes.
  *
@@ -59,16 +59,26 @@ public class ObjectMetadataStore {
                 p.getProperty("contentLanguage"),
                 p.getProperty("expires"),
                 userMetadata);
-        return new Metadata(p.getProperty("storageClass", "STANDARD"), p.getProperty("restoreExpiry"), headers);
+                long contentLength=parseContentLength(p.getProperty("contentLength"));
+                String etag=p.getProperty("etag");
+                Instant lastModified=parseInstant(p.getProperty("lastModified"));
+
+        return new Metadata(p.getProperty("storageClass", "STANDARD"), 
+        p.getProperty("restoreExpiry"),
+        contentLength, etag, lastModified,
+         headers);
     }
 
     /**
      * Saves storage class, representation headers and x-amz-meta-* values.
      */
-    public void put(String bucket, String key, String storageClass, ObjectHeaders headers) {
+    public void put(String bucket, String key, String storageClass, ObjectHeaders headers,long contentLength,String etag,FileTime lastModified) {
         Properties p = new Properties();
         p.setProperty("storageClass", storageClass);
         p.setProperty("contentType", headers.contentType() == null || headers.contentType().isBlank() ? DEFAULT_CONTENT_TYPE : headers.contentType());
+        p.setProperty("contentLength", Long.toString(contentLength));
+        p.setProperty("etag", etag);
+        p.setProperty("lastModified", lastModified.toInstant().toString());
         set(p, "cacheControl", headers.cacheControl());
         set(p, "contentDisposition", headers.contentDisposition());
         set(p, "contentEncoding", headers.contentEncoding());
@@ -163,10 +173,33 @@ public class ObjectMetadataStore {
     }
 
     /** Complete metadata returned to the controller for one object. */
-    public record Metadata(String storageClass, String restoreExpiry, ObjectHeaders headers) {
+    public record Metadata(String storageClass, String restoreExpiry,long contentLength, String etag, Instant lastModified, ObjectHeaders headers) {
 
         public String contentType() {
             return headers.contentType();
         }
     }
+    private long parseContentLength(String value) {
+    if (value == null || value.isBlank()) {
+        return -1;
+    }
+
+    try {
+        return Long.parseLong(value);
+    } catch (NumberFormatException exception) {
+        return -1;
+    }
+}
+
+private Instant parseInstant(String value) {
+    if (value == null || value.isBlank()) {
+        return null;
+    }
+
+    try {
+        return Instant.parse(value);
+    } catch (java.time.format.DateTimeParseException exception) {
+        return null;
+    }
+}
 }

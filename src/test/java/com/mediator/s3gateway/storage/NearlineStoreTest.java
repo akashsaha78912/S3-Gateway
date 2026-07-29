@@ -1,10 +1,5 @@
 package com.mediator.s3gateway.storage;
 
-import com.mediator.s3gateway.config.GatewayProperties;
-import com.mediator.s3gateway.exception.S3Exception;
-
-import static org.junit.jupiter.api.Assertions.*;
-
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -13,8 +8,17 @@ import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+
+import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.exception.S3Exception;
 
 /**
  * Regression tests for bucket/category resolution, safe NLD paths, upload
@@ -54,19 +58,18 @@ class NearlineStoreTest {
     NearlineStore store=store("sports-archive","SPORTS");
     Files.createDirectories(temp.resolve("unconfigured-directory"));
 
-    assertEquals(java.util.Set.of("sports-archive"),store.buckets());
+    assertEquals(java.util.Set.of("sports-archive","unconfigured-directory"),store.buckets());
   }
 
-  /** Ensures a directory alone cannot make an unknown bucket valid. */
+  /** Uses an unmapped bucket name as its category. */
   @Test
-  void rejectsUnknownBucketEvenWhenMatchingDirectoryExists() throws Exception {
+  void usesUnknownBucketNameAsCategory() throws Exception {
     NearlineStore store=store("sports-archive","SPORTS");
     Files.createDirectories(temp.resolve("unknown-bucket"));
 
-    S3Exception error=assertThrows(S3Exception.class,() -> store.object("unknown-bucket","file.txt"));
-
-    assertEquals(404,error.status());
-    assertEquals("NoSuchBucket",error.code());
+    assertEquals(
+        temp.resolve("unknown-bucket/file.txt").toAbsolutePath().normalize(),
+        store.object("unknown-bucket","file.txt"));
   }
 
   /** Protects the NLD root from an escaping configured category. */
@@ -174,25 +177,26 @@ class NearlineStoreTest {
     assertEquals("NoSuchKey",error.code());
   }
 
-  /** Ensures a dynamic bucket survives reconstruction of the store. */
+  /** Creates a bucket using the bucket name as its category. */
   @Test
-  void createsAndPersistsDynamicBucketAsCategory() throws Exception {
+  void createsBucketUsingBucketNameAsCategory() throws Exception {
     NearlineStore store=new NearlineStore(properties());
 
     String category=store.createBucket("news-archive");
 
-    assertEquals("NEWS_ARCHIVE",category);
-    assertTrue(Files.isDirectory(temp.resolve("NEWS_ARCHIVE")));
-    assertTrue(Files.isRegularFile(temp.resolve(".gateway-buckets.properties")));
+    assertEquals("news-archive",category);
+    assertTrue(Files.isDirectory(temp.resolve("news-archive")));
+    assertFalse(Files.exists(temp.resolve(".gateway-buckets.properties")));
     NearlineStore reloaded=new NearlineStore(properties());
-    assertEquals("NEWS_ARCHIVE",reloaded.category("news-archive"));
+    assertEquals("news-archive",reloaded.category("news-archive"));
     assertTrue(reloaded.buckets().contains("news-archive"));
   }
 
-  /** Rejects creation when a configured or dynamic bucket already exists. */
+  /** Rejects bucket creation when its physical directory already exists. */
   @Test
-  void rejectsCreatingExistingConfiguredOrDynamicBucket() throws Exception {
+  void rejectsCreatingExistingPhysicalBucket() throws Exception {
     NearlineStore configured=store("sports-archive","SPORTS");
+    assertEquals("SPORTS",configured.createBucket("sports-archive"));
     S3Exception configuredError=assertThrows(S3Exception.class,()->configured.createBucket("sports-archive"));
     assertEquals(409,configuredError.status());
     assertEquals("BucketAlreadyOwnedByYou",configuredError.code());
@@ -204,15 +208,13 @@ class NearlineStoreTest {
     assertEquals("BucketAlreadyOwnedByYou",dynamicError.code());
   }
 
-  /** Rejects two dynamic bucket names that resolve to one category. */
+  /** Allows category names that differ physically. */
   @Test
-  void rejectsDynamicCategoryCollision() {
+  void allowsDifferentPhysicalCategoryNames() throws Exception {
     NearlineStore store=store("existing-alias","NEWS_ARCHIVE");
 
-    S3Exception error=assertThrows(S3Exception.class,()->store.createBucket("news-archive"));
-
-    assertEquals(409,error.status());
-    assertEquals("BucketAlreadyExists",error.code());
+    assertEquals("news-archive",store.createBucket("news-archive"));
+    assertTrue(Files.isDirectory(temp.resolve("news-archive")));
     assertFalse(Files.exists(temp.resolve(".gateway-buckets.properties")));
   }
 
