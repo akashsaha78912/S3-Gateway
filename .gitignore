@@ -1,0 +1,12 @@
+# Compiled Java source files
+*.class
+
+# Log files
+*.log
+
+# Ignore sensitive Spring Boot configuration
+src/main/resources/application.yml
+
+
+# Ignore keystore file
+src\main\resources\keystore.p12
