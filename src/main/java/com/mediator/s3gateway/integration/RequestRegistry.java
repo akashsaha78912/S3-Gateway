@@ -20,10 +20,10 @@ import org.springframework.stereotype.Service;
  * File-backed boundary between this standalone gateway and future Mediator
  * processing.
  *
- * <p>Each archive or restore request is written below
- * {@code .gateway-requests}. The object itself remains in the NLD store.
- * Replace the marked executor body with the real Mediator Manager API when
- * that integration phase begins.
+ * <p>
+ * Each archive or restore request is written below {@code .gateway-requests}.
+ * The object itself remains in the NLD store. Replace the marked executor body
+ * with the real Mediator Manager API when that integration phase begins.
  */
 @Service
 public class RequestRegistry {
@@ -99,8 +99,9 @@ public class RequestRegistry {
         for (String line : s.split("\\R")) {
             if (line.startsWith(field + "=")) {
                 return line.substring(field.length() + 1);
-        
+
             }
-        }return "";
+        }
+        return "";
     }
 }

@@ -5,6 +5,7 @@ import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.UUID;
 
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -12,14 +13,16 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-
 /**
  * Adds the two request identifiers expected on S3 responses.
  *
  * <p>The same values are stored as request attributes so S3ErrorHandler can
  * include them inside XML error documents.
  */
+// @Component
+// class RequestIdFilter extends OncePerRequestFilter {
 @Component
+@Order(1)
 class RequestIdFilter extends OncePerRequestFilter {
 
     private static final SecureRandom RANDOM = new SecureRandom();

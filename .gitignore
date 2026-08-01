@@ -10,3 +10,19 @@ src/main/resources/application.yml
 
 # Ignore keystore file
 src\main\resources\keystore.p12
+
+# Build Outputs
+target/
+build/
+
+# Compiled Java Files
+*.class
+*.jar
+*.war
+
+# IDE Metadata
+.idea/
+*.iml
+.classpath
+.project
+.settings/

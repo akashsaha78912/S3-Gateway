@@ -40,6 +40,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.mediator.s3gateway.exception.S3Exception;
 import com.mediator.s3gateway.integration.RequestRegistry;
+import com.mediator.s3gateway.storage.MultipartUploadStore;
 import com.mediator.s3gateway.storage.NearlineStore;
 import com.mediator.s3gateway.storage.ObjectMetadataStore;
 
@@ -63,15 +64,17 @@ public class S3Controller {
     private final NearlineStore store;
     private final RequestRegistry requests;
     private final ObjectMetadataStore metadata;
+    private final MultipartUploadStore multipart;
 
     /**
      * Spring injects the controller's storage collaborators through this
      * constructor.
      */
-    public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata) {
+    public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata, MultipartUploadStore multipart) {
         this.store = store;
         this.requests = requests;
         this.metadata = metadata;
+        this.multipart = multipart;
     }
 
     /**
@@ -136,7 +139,7 @@ public class S3Controller {
      *
      * @return an S3 XML NotImplemented response without deleting the object
      */
-    @DeleteMapping("/{bucket}/{*key}")
+    @DeleteMapping(value = "/{bucket}/{*key}", params = "!uploadId")
     public ResponseEntity<String> deleteObject(@PathVariable String bucket, @PathVariable String key, HttpServletRequest request) {
         logRequest(request);
         String actual = clean(key);
@@ -309,7 +312,7 @@ public class S3Controller {
      * the object write succeeds, this method persists its HTTP metadata,
      * records the archive request and returns the calculated ETag.
      */
-    @PutMapping("/{bucket}/{*key}")
+    @PutMapping(value = "/{bucket}/{*key}", params = {"!partNumber", "!uploadId"})
     public ResponseEntity<?> put(@PathVariable String bucket,
             @PathVariable String key,
             @RequestHeader(value = "x-amz-storage-class", defaultValue = "STANDARD") String storageClass,
@@ -428,6 +431,136 @@ public class S3Controller {
             }
         }
         return xml.append("</DeleteResult>").toString();
+    }
+
+    //initiate multipart upload, upload part, complete multipart upload, and abort multipart upload methods follow here
+    @PostMapping(value = "/{bucket}/{*key}", params = "uploads", produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> initiateMultipartUpload(
+            @PathVariable String bucket,
+            @PathVariable String key,
+            @RequestHeader(value = "x-amz-storage-class", defaultValue = "STANDARD") String storageClass,
+            HttpServletRequest request) throws IOException {
+
+        logRequest(request);
+        String actual = clean(key);
+
+        storageClass = storageClass.toUpperCase(Locale.ROOT);
+        if (!Set.of("STANDARD", "GLACIER", "DEEP_ARCHIVE").contains(storageClass)) {
+            throw new S3Exception(400, "InvalidStorageClass", "Supported storage classes are STANDARD, GLACIER, DEEP_ARCHIVE", storageClass);
+        }
+
+        String uploadId = multipart.initiate(bucket, actual, storageClass);
+
+        String body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<InitiateMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                + "<Bucket>" + xml(bucket) + "</Bucket>"
+                + "<Key>" + xml(actual) + "</Key>"
+                + "<UploadId>" + xml(uploadId) + "</UploadId>"
+                + "</InitiateMultipartUploadResult>";
+
+        return ResponseEntity.ok().contentType(MediaType.APPLICATION_XML).body(body);
+    }
+
+    // Handles UploadPart: {@code PUT /{bucket}/{key}?partNumber={partNumber}&uploadId={uploadId}}.
+    // Each part is stored in a temporary location until the multipart upload is completed.
+    @PutMapping(value = "/{bucket}/{*key}", params = {"partNumber", "uploadId"})
+    public ResponseEntity<Void> uploadPart(
+            @PathVariable String bucket,
+            @PathVariable String key,
+            @RequestParam int partNumber,
+            @RequestParam String uploadId,
+            HttpServletRequest request) throws IOException {
+
+        logRequest(request);
+        String actual = clean(key);
+
+        String partEtag = multipart.putPart(
+                uploadId,
+                bucket,
+                actual,
+                partNumber,
+                request.getInputStream(),
+                request.getContentLengthLong()
+        );
+
+        return ResponseEntity.ok()
+                .contentLength(0)
+                .eTag("\"" + partEtag + "\"")
+                .build();
+    }
+
+    // Handles CompleteMultipartUpload: {@code POST /{bucket}/{key}?uploadId={uploadId}}.
+    // Assembles the uploaded parts into a single object and stores it in the nearline store.
+    @PostMapping(value = "/{bucket}/{*key}", params = "uploadId", produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> completeMultipartUpload(
+            @PathVariable String bucket,
+            @PathVariable String key,
+            @RequestParam String uploadId,
+            @RequestBody String completeXml,
+            HttpServletRequest request) throws IOException {
+
+        logRequest(request);
+        String actual = clean(key);
+
+        List<Integer> requestedParts = parseCompletedPartNumbers(completeXml);
+        MultipartUploadStore.CompletedMultipart completed = multipart.complete(uploadId, bucket, actual, requestedParts);
+
+        NearlineStore.Stored stored;
+        try (InputStream in = Files.newInputStream(completed.assembledFile())) {
+            stored = store.put(bucket, actual, in, completed.length());
+        }
+
+        ObjectMetadataStore.ObjectHeaders objectHeaders = new ObjectMetadataStore.ObjectHeaders(
+                "application/octet-stream",
+                null,
+                null,
+                null,
+                null,
+                null,
+                Map.of()
+        );
+
+        metadata.put(bucket, actual, completed.storageClass(), objectHeaders, stored.length(), stored.etag(), stored.lastModified());
+        requests.submit("ARCHIVE", bucket, actual);
+        multipart.cleanup(uploadId);
+
+        String body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                + "<Bucket>" + xml(bucket) + "</Bucket>"
+                + "<Key>" + xml(actual) + "</Key>"
+                + "<ETag>\"" + xml(stored.etag()) + "\"</ETag>"
+                + "</CompleteMultipartUploadResult>";
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_XML)
+                .eTag("\"" + stored.etag() + "\"")
+                .body(body);
+    }
+
+    // Handles AbortMultipartUpload: {@code DELETE /{bucket}/{key}?uploadId={uploadId}}.
+    @DeleteMapping(value = "/{bucket}/{*key}", params = "uploadId")
+    public ResponseEntity<Void> abortMultipartUpload(
+            @PathVariable String bucket,
+            @PathVariable String key,
+            @RequestParam String uploadId,
+            HttpServletRequest request) throws IOException {
+
+        logRequest(request);
+        multipart.abort(uploadId, bucket, clean(key));
+        return ResponseEntity.noContent().build();
+    }
+
+    private static List<Integer> parseCompletedPartNumbers(String body) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("<PartNumber>\\s*(\\d+)\\s*</PartNumber>")
+                .matcher(body == null ? "" : body);
+
+        List<Integer> parts = new java.util.ArrayList<>();
+        while (matcher.find()) {
+            parts.add(Integer.parseInt(matcher.group(1)));
+        }
+
+        return parts;
     }
 
     /**

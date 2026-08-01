@@ -69,3 +69,6 @@ Every successful PUT returns the normal ETag plus the S3 diagnostic headers `x-a
 ## Notes for AWS clients
 
 The request shapes and XML/error conventions are S3-style, but SigV4 validation is intentionally bypassed for this development phase. Configure a path-style endpoint and supply any credentials your SDK requires syntactically. Add a real `S3AuthProvider` before exposing this beyond a trusted test network.
+
+
+{"userId":"ca14243e-dab8-457b-80e6-efcba86c9ac0","username":"akash","accessKeyId":"NLD_v1Vg7S1ieigtmGXYo7iI5NbA","enabled":true,"createdAt":"2026-07-29T11:15:24.251453700Z"}

@@ -303,7 +303,7 @@ public class NearlineStore {
                     throw new UncheckedIOException(e);
                 }
             })
-           // .filter(e -> !e.key().startsWith(".gateway-multipart/"))
+            .filter(e -> !e.key().startsWith(".gateway-multipart/"))
             .filter(e -> prefix == null || e.key().startsWith(prefix))
             .sorted(Comparator.comparing(Entry::key))
             .toList();
