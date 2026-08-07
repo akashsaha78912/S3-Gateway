@@ -7,6 +7,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Enumeration;
@@ -39,6 +41,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.mediator.s3gateway.exception.S3Exception;
+import com.mediator.s3gateway.integration.ManagerRegistrationClient;
+import com.mediator.s3gateway.integration.ManagerRegistrationClient.HeadObjectResponse;
 import com.mediator.s3gateway.integration.RequestRegistry;
 import com.mediator.s3gateway.storage.MultipartUploadStore;
 import com.mediator.s3gateway.storage.NearlineStore;
@@ -65,16 +69,18 @@ public class S3Controller {
     private final RequestRegistry requests;
     private final ObjectMetadataStore metadata;
     private final MultipartUploadStore multipart;
+    private final ManagerRegistrationClient managerClient;
 
     /**
      * Spring injects the controller's storage collaborators through this
      * constructor.
      */
-    public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata, MultipartUploadStore multipart) {
+    public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata, MultipartUploadStore multipart, ManagerRegistrationClient managerClient) {
         this.store = store;
         this.requests = requests;
         this.metadata = metadata;
         this.multipart = multipart;
+        this.managerClient = managerClient;
     }
 
     /**
@@ -165,13 +171,14 @@ public class S3Controller {
      * Supports prefix filtering, delimiter grouping, start-after, continuation
      * tokens and a maximum page size of 1000.
      */
-    @GetMapping(value = "/{bucket}", params = "list-type=2", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = {"/{bucket}", "/{bucket}/"}, produces = MediaType.APPLICATION_XML_VALUE)
     public String list(@PathVariable String bucket,
             @RequestParam(required = false) String prefix,
             @RequestParam(required = false) String delimiter,
-            @RequestParam(defaultValue = "1000") int maxKeys,
+            @RequestParam(defaultValue = "1000", name = "max-keys") int maxKeys,
             @RequestParam(required = false, name = "start-after") String after,
             @RequestParam(required = false, name = "continuation-token") String token,
+            @RequestParam(required = false, name = "encoding-type") String encodingType,
             HttpServletRequest request) throws IOException {
 
         logRequest(request);
@@ -206,27 +213,68 @@ public class S3Controller {
 
         List<NearlineStore.Entry> items = filteredItems.subList(Math.min(start, filteredItems.size()), Math.min(start + limit, filteredItems.size()));
         boolean truncated = start + items.size() < filteredItems.size();
+        boolean urlEncodeKeys = "url".equalsIgnoreCase(encodingType);
 
-        // Construct the AWS ListObjectsV2 XML response.
-        StringBuilder x = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>")
-                .append(xml(bucket)).append("</Name><Prefix>").append(xml(prefix)).append("</Prefix><KeyCount>")
-                .append(items.size() + commonPrefixes.size()).append("</KeyCount><MaxKeys>").append(limit).append("</MaxKeys><IsTruncated>")
-                .append(truncated).append("</IsTruncated>");
+        String responsePrefix = urlEncodeKeys
+                ? encodeS3Key(prefix)
+                : prefix;
 
+        StringBuilder x = new StringBuilder(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                + "<Name>"
+        )
+                .append(xml(bucket))
+                .append("</Name><Prefix>")
+                .append(xml(responsePrefix))
+                .append("</Prefix>");
+
+        if (urlEncodeKeys) {
+            x.append("<EncodingType>url</EncodingType>");
+        }
+
+        x.append("<KeyCount>")
+                .append(items.size() + commonPrefixes.size())
+                .append("</KeyCount><MaxKeys>")
+                .append(limit)
+                .append("</MaxKeys><IsTruncated>")
+                .append(truncated)
+                .append("</IsTruncated>");
+
+// Add each object to the XML response.
         for (var e : items) {
-            //  String etag = metadata.get(bucket, e.key()) != null ? "\"" + e.key().hashCode() + "\"" : "\"\"";
             ObjectMetadataStore.Metadata m = metadata.get(bucket, e.key());
+
             String etag = m.etag() == null || m.etag().isBlank()
                     ? "\"\""
                     : "\"" + m.etag() + "\"";
 
-            x.append("<Contents><Key>").append(xml(e.key())).append("</Key><LastModified>").append(time(e.lastModified()))
-                    .append("</LastModified><ETag>").append(etag).append("</ETag><Size>").append(e.length()).append("</Size><StorageClass>")
-                    .append(metadata.get(bucket, e.key()).storageClass()).append("</StorageClass></Contents>");
+            String responseKey = urlEncodeKeys
+                    ? encodeS3Key(e.key())
+                    : e.key();
+
+            x.append("<Contents><Key>")
+                    .append(xml(responseKey))
+                    .append("</Key><LastModified>")
+                    .append(time(e.lastModified()))
+                    .append("</LastModified><ETag>")
+                    .append(etag)
+                    .append("</ETag><Size>")
+                    .append(e.length())
+                    .append("</Size><StorageClass>")
+                    .append(m.storageClass())
+                    .append("</StorageClass></Contents>");
         }
 
+// Add folder-like prefixes to the XML response.
         for (String cp : commonPrefixes) {
-            x.append("<CommonPrefixes><Prefix>").append(xml(cp)).append("</Prefix></CommonPrefixes>");
+            String responseCommonPrefix = urlEncodeKeys
+                    ? encodeS3Key(cp)
+                    : cp;
+
+            x.append("<CommonPrefixes><Prefix>")
+                    .append(xml(responseCommonPrefix))
+                    .append("</Prefix></CommonPrefixes>");
         }
 
         if (truncated) {
@@ -246,9 +294,60 @@ public class S3Controller {
         logRequest(request);
         String actual = clean(key);
         log.info("Executing HeadObject - Bucket: {}, Key: {}", bucket, actual);
+        // Path p = store.existing(bucket, actual);
+        // return headers(p, metadata.get(bucket, actual)).build();
+        HeadObjectResponse managerResponse = managerClient.headObject(actual, bucket);
+        log.info(
+                "Manager HeadObject response - objectName: {}, category: {}, response: {}",
+                actual,
+                bucket,
+                managerResponse
+        );
+        if (managerResponse == null || managerResponse.status() != 1000) {
+            throw new S3Exception(
+                    404,
+                    "NoSuchKey",
+                    "The specified object does not exist",
+                    actual
+            );
+        }
 
-        Path p = store.existing(bucket, actual);
-        return headers(p, metadata.get(bucket, actual)).build();
+        HttpHeaders headers = new HttpHeaders();
+
+        headers.setContentLength(managerResponse.contentLength());
+        headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+
+        if (managerResponse.checksum() != null
+                && !managerResponse.checksum().isBlank()) {
+            headers.setETag("\"" + managerResponse.checksum() + "\"");
+        }
+
+        if (managerResponse.archiveDate() != null
+                && !managerResponse.archiveDate().isBlank()) {
+
+            LocalDateTime archiveDate = LocalDateTime.parse(
+                    managerResponse.archiveDate(),
+                    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+            );
+
+            headers.setLastModified(
+                    archiveDate.atZone(ZoneId.systemDefault())
+                            .toInstant()
+                            .toEpochMilli()
+            );
+        }
+
+        headers.set(
+                "x-amz-meta-object-name",
+                managerResponse.objectName()
+        );
+
+        headers.set(
+                "x-amz-meta-category",
+                managerResponse.category()
+        );
+        headers.set("status", String.valueOf(managerResponse.status()));
+        return new ResponseEntity<>(headers, HttpStatus.OK);
     }
 
     /**
@@ -335,7 +434,7 @@ public class S3Controller {
         // Pass the ordinary servlet request stream directly to NearlineStore.
         InputStream inputStream = request.getInputStream();
         long expectedLength = request.getContentLengthLong();
-
+        requests.submit("ARCHIVE", bucket, actual, request.getContentLength());
         // NearlineStore validates the key/checksums and atomically publishes the file.
         NearlineStore.Stored stored = store.put(
                 bucket,
@@ -358,7 +457,7 @@ public class S3Controller {
         metadata.put(bucket, actual, storageClass, objectHeaders, stored.length(), stored.etag(), stored.lastModified());
 
         // Record the asynchronous archive hand-off; this does not replace NLD storage.
-        requests.submit("ARCHIVE", bucket, actual);
+        // requests.submit("ARCHIVE", bucket, actual);
         String rawEtag = stored.etag().replace("\"", "");
 
         ResponseEntity.BodyBuilder response = ResponseEntity.ok()
@@ -397,7 +496,7 @@ public class S3Controller {
         if (!"STANDARD".equals(m.storageClass())) {
             metadata.restored(bucket, actual, restoreDays(restoreRequest));
         }
-        requests.submit("RESTORE", bucket, actual);
+        // requests.submit("RESTORE", bucket, actual);
         return ResponseEntity.accepted().header("x-amz-restore", restoreHeader(metadata.get(bucket, actual))).build();
     }
 
@@ -443,7 +542,6 @@ public class S3Controller {
 
         logRequest(request);
         String actual = clean(key);
-
         storageClass = storageClass.toUpperCase(Locale.ROOT);
         if (!Set.of("STANDARD", "GLACIER", "DEEP_ARCHIVE").contains(storageClass)) {
             throw new S3Exception(400, "InvalidStorageClass", "Supported storage classes are STANDARD, GLACIER, DEEP_ARCHIVE", storageClass);
@@ -473,7 +571,6 @@ public class S3Controller {
 
         logRequest(request);
         String actual = clean(key);
-
         String partEtag = multipart.putPart(
                 uploadId,
                 bucket,
@@ -521,7 +618,7 @@ public class S3Controller {
         );
 
         metadata.put(bucket, actual, completed.storageClass(), objectHeaders, stored.length(), stored.etag(), stored.lastModified());
-        requests.submit("ARCHIVE", bucket, actual);
+        //   requests.submit("ARCHIVE", bucket, actual);
         multipart.cleanup(uploadId);
 
         String body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
@@ -592,16 +689,6 @@ public class S3Controller {
     /**
      * Builds the common successful HeadObject response headers.
      */
-    // private ResponseEntity.BodyBuilder headers(Path p, ObjectMetadataStore.Metadata m) throws IOException {
-    //     HttpHeaders h = new HttpHeaders();
-    //     applyObjectHeaders(h, m);
-    //     ResponseEntity.BodyBuilder builder = ResponseEntity.ok().contentLength(Files.size(p)).
-    //     lastModified(Files.getLastModifiedTime(p).toMillis()).
-    //     header(HttpHeaders.ACCEPT_RANGES, "bytes").header("x-amz-storage-class", m.storageClass())
-    //     .header("x-amz-restore", restoreHeader(m));
-    //     h.forEach((name, values) -> builder.header(name, values.toArray(String[]::new)));
-    //     return builder;
-    // }
     private ResponseEntity.BodyBuilder headers(
             Path path,
             ObjectMetadataStore.Metadata metadata
@@ -777,6 +864,44 @@ public class S3Controller {
      */
     private static String xml(String s) {
         return s == null ? "" : s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    // Encodes an S3 object key for XML responses when the request specified encoding-type=url.
+    private static String encodeS3Key(String value) {
+        if (value == null) {
+            return "";
+        }
+
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        StringBuilder encoded = new StringBuilder();
+
+        for (byte current : bytes) {
+            int b = current & 0xff;
+
+            boolean unreserved
+                    = (b >= 'a' && b <= 'z')
+                    || (b >= 'A' && b <= 'Z')
+                    || (b >= '0' && b <= '9')
+                    || b == '-'
+                    || b == '_'
+                    || b == '.'
+                    || b == '~'
+                    || b == '/';
+
+            if (unreserved) {
+                encoded.append((char) b);
+            } else {
+                encoded.append('%');
+                encoded.append(Character.toUpperCase(
+                        Character.forDigit((b >>> 4) & 0x0f, 16)
+                ));
+                encoded.append(Character.toUpperCase(
+                        Character.forDigit(b & 0x0f, 16)
+                ));
+            }
+        }
+
+        return encoded.toString();
     }
 
     /**

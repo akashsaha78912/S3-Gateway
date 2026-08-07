@@ -1,8 +1,5 @@
 package com.mediator.s3gateway.integration;
 
-import com.mediator.s3gateway.config.GatewayProperties;
-import com.mediator.s3gateway.storage.NearlineStore;
-
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -14,7 +11,12 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.storage.NearlineStore;
 
 /**
  * File-backed boundary between this standalone gateway and future Mediator
@@ -31,30 +33,66 @@ public class RequestRegistry {
     private final GatewayProperties properties;
     private final NearlineStore store;
     private final ExecutorService executor;
+    private final ManagerRegistrationClient managerClient;
 
     /**
      * Creates the registry and its configured fixed-size background executor.
      */
-    public RequestRegistry(GatewayProperties properties, NearlineStore store) {
+    public RequestRegistry(GatewayProperties properties, NearlineStore store, ManagerRegistrationClient managerClient) {
         this.properties = properties;
         this.store = store;
+        this.managerClient = managerClient;
         this.executor = Executors.newFixedThreadPool(properties.getAsync().getWorkers());
     }
+    private static final Logger log
+            = LoggerFactory.getLogger(RequestRegistry.class);
 
     /**
      * Persists a new request, then advances its status asynchronously.
      *
      * @return the UUID assigned to the request record
      */
-    public String submit(String operation, String bucket, String key) {
+    public String submit(String operation, String bucket, String key, int contentLength) {
         String category = store.category(bucket);
         String id = UUID.randomUUID().toString();
         Path requestFile = properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests").resolve(id + ".properties");
         write(requestFile, operation, category, key, "ACCEPTED");
         // This background transition is the placeholder for a Manager call.
+        // executor.submit(() -> {
+        //     write(requestFile, operation, category, key, "SUBMITTED_TO_MANAGER");
+        //     /* MediatorManager.submit(request) belongs here. */ });
+
         executor.submit(() -> {
-            write(requestFile, operation, category, key, "SUBMITTED_TO_MANAGER");
-            /* MediatorManager.submit(request) belongs here. */ });
+            try {
+                managerClient.register(operation, category, key, contentLength);
+
+                write(
+                        requestFile,
+                        operation,
+                        category,
+                        key,
+                        "SUBMITTED_TO_MANAGER"
+                );
+            } catch (Exception e) {
+                log.error(
+                        "Manager registration failed: requestId={}, operation={}, category={}, key={}",
+                        id,
+                        operation,
+                        category,
+                        key,
+                        e
+                );
+
+                write(
+                        requestFile,
+                        operation,
+                        category,
+                        key,
+                        "SUBMISSION_FAILED"
+                );
+            }
+        });
+
         return id;
     }
 
