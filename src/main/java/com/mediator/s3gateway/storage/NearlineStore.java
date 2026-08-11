@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.IntConsumer;
 import java.util.stream.Stream;
 import java.util.zip.CRC32;
 import java.util.zip.CRC32C;
@@ -222,20 +223,22 @@ public class NearlineStore {
      * Convenience PUT without checksums or conditional headers.
      */
     public Stored put(String bucket, String key, InputStream input, long expectedLength) throws IOException {
-        return put(bucket, key, input, expectedLength, Map.of(), null, null);
+        return put(bucket, key, input, expectedLength, Map.of(), null, null, percent -> {
+        });
     }
 
     /**
      * Convenience PUT with checksums but no conditional headers.
      */
     public Stored put(String bucket, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums) throws IOException {
-        return put(bucket, key, input, expectedLength, clientChecksums, null, null);
+        return put(bucket, key, input, expectedLength, clientChecksums, null, null, percent -> {
+        });
     }
 
     /**
      * Stores one object with optional checksums and write preconditions.
      */
-    public Stored put(String bucket, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums, String ifMatch, String ifNoneMatch) throws IOException {
+    public Stored put(String bucket, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums, String ifMatch, String ifNoneMatch, IntConsumer progressListener) throws IOException {
         validateChecksumHeaders(clientChecksums, key);
 
         Path destination = object(bucket, key);
@@ -250,14 +253,14 @@ public class NearlineStore {
         Object lock = objectLocks.computeIfAbsent(destination, p -> new Object());
         synchronized (lock) {
             validateWriteConditions(destination, key, ifMatch, ifNoneMatch);
-            return writeObject(destination, key, input, expectedLength, clientChecksums);
+            return writeObject(destination, key, input, expectedLength, clientChecksums, progressListener);
         }
     }
 
     /**
      * Streams to a staging file, verifies the content, then publishes it.
      */
-    private Stored writeObject(Path destination, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums) throws IOException {
+    private Stored writeObject(Path destination, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums, IntConsumer progressListener) throws IOException {
         Path staging = destination.getParent().resolve("." + destination.getFileName() + "." + UUID.randomUUID() + ".uploading");
         long written = 0;
         MessageDigest digest = messageDigest("MD5");
@@ -302,6 +305,9 @@ public class NearlineStore {
                                 "PUT progress: key={}, written={} bytes, total={} bytes, progress={}%",
                                 key, written, expectedLength, percent
                         );
+                        if (progressListener != null) {
+                            progressListener.accept((int) percent);
+                        }
                         lastLoggedPercent = percent;
                     }
                 } else {

@@ -17,6 +17,8 @@ public class GatewayProperties {
 
     private Manager manager = new Manager();
     private Head head = new Head();
+    private Progress progress = new Progress();
+
     public Manager getManager() {
         return manager;
     }
@@ -32,6 +34,13 @@ public class GatewayProperties {
     public void setHead(Head head) {
         this.head = head;
     }
+    public Progress getProgress() {
+        return progress;
+    }
+    public void setProgress(Progress progress) {
+        this.progress = progress;
+    }
+
     /**
      * Root directory under which all gateway-owned NLD data is stored.
      */
@@ -90,7 +99,22 @@ public class GatewayProperties {
         }
     }
 
+    public static class Progress {
+
+        private String url;
+
+        public String getUrl() {
+            return url;
+        }
+
+        public void setUrl(String url) {
+            this.url = url;
+        }
+
+    }
+
     public static class Head {
+
         private String url;
 
         public String getUrl() {
@@ -101,14 +125,15 @@ public class GatewayProperties {
             this.url = url;
         }
     }
+
     public static class Manager {
 
         private String registerUrl;
         private String sourceDestination = "Mover1";
         private String rootPath;
         private String qos = "0";
-        private String moverName = "mover1_disk";
-        private String diskName = "Disk1";
+        private String moverName = "Mover1";
+        private String diskName = "mover1_disk";
         private String options = "";
         private String comments = "";
         private String instanceNumber = "-1";
@@ -142,15 +167,19 @@ public class GatewayProperties {
         public String getQos() {
             return qos;
         }
+
         public String getMoverName() {
             return moverName;
         }
+
         public void setMoverName(String moverName) {
             this.moverName = moverName;
         }
+
         public String getDiskName() {
             return diskName;
         }
+
         public void setDiskName(String diskName) {
             this.diskName = diskName;
         }

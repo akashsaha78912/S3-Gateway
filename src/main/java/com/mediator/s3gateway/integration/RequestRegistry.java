@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -52,48 +51,70 @@ public class RequestRegistry {
      *
      * @return the UUID assigned to the request record
      */
-    public String submit(String operation, String bucket, String key, int contentLength) {
+    public int submit(String operation, String bucket, String key, long contentLength) {
         String category = store.category(bucket);
-        String id = UUID.randomUUID().toString();
-        Path requestFile = properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests").resolve(id + ".properties");
-        write(requestFile, operation, category, key, "ACCEPTED");
+        // String id = UUID.randomUUID().toString();
+        // Path requestFile = properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests").resolve(id + ".properties");
+        // write(requestFile, operation, category, key, "ACCEPTED");
         // This background transition is the placeholder for a Manager call.
         // executor.submit(() -> {
         //     write(requestFile, operation, category, key, "SUBMITTED_TO_MANAGER");
         //     /* MediatorManager.submit(request) belongs here. */ });
 
-        executor.submit(() -> {
-            try {
-                managerClient.register(operation, category, key, contentLength);
+        // executor.submit(() -> {
+        //     try {
+        //          managerClient.register(operation, category, key, contentLength);
+        //         write(
+        //                 requestFile,
+        //                 operation,
+        //                 category,
+        //                 key,
+        //                 "SUBMITTED_TO_MANAGER"
+        //         );
+        //     } catch (Exception e) {
+        //         log.error(
+        //                 "Manager registration failed: requestId={}, operation={}, category={}, key={}",
+        //                 id,
+        //                 operation,
+        //                 category,
+        //                 key,
+        //                 e
+        //         );
+        //         write(
+        //                 requestFile,
+        //                 operation,
+        //                 category,
+        //                 key,
+        //                 "SUBMISSION_FAILED"
+        //         );
+        //     }
+        // });
+        ManagerRegistrationClient.RegisterResponse response
+                = managerClient.register(operation, category, key, contentLength);
+        if (response == null) {
+            throw new IllegalStateException(
+                    "Manager registration returned an empty response"
+            );
+        }
 
-                write(
-                        requestFile,
-                        operation,
-                        category,
-                        key,
-                        "SUBMITTED_TO_MANAGER"
-                );
-            } catch (Exception e) {
-                log.error(
-                        "Manager registration failed: requestId={}, operation={}, category={}, key={}",
-                        id,
-                        operation,
-                        category,
-                        key,
-                        e
-                );
+        log.info(
+                "Manager registration response: operation={}, category={}, key={}, reqID={}, status={}",
+                operation,
+                category,
+                key,
+                response.reqID(),
+                response.status()
+        );
 
-                write(
-                        requestFile,
-                        operation,
-                        category,
-                        key,
-                        "SUBMISSION_FAILED"
-                );
-            }
-        });
+        // write(
+        //         requestFile,
+        //         operation,
+        //         category,
+        //         key,
+        //         "SUBMITTED_TO_MANAGER"
+        // );
+        return response.reqID();
 
-        return id;
     }
 
     /**

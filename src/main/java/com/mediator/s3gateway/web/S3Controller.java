@@ -19,6 +19,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -313,35 +315,28 @@ public class S3Controller {
         }
 
         HttpHeaders headers = new HttpHeaders();
-
         headers.setContentLength(managerResponse.contentLength());
         headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
-
         if (managerResponse.checksum() != null
                 && !managerResponse.checksum().isBlank()) {
             headers.setETag("\"" + managerResponse.checksum() + "\"");
         }
-
         if (managerResponse.archiveDate() != null
                 && !managerResponse.archiveDate().isBlank()) {
-
             LocalDateTime archiveDate = LocalDateTime.parse(
                     managerResponse.archiveDate(),
                     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
             );
-
             headers.setLastModified(
                     archiveDate.atZone(ZoneId.systemDefault())
                             .toInstant()
                             .toEpochMilli()
             );
         }
-
         headers.set(
                 "x-amz-meta-object-name",
                 managerResponse.objectName()
         );
-
         headers.set(
                 "x-amz-meta-category",
                 managerResponse.category()
@@ -365,7 +360,15 @@ public class S3Controller {
         logRequest(request);
         String actual = clean(key);
         log.info("Executing GetObject - Bucket: {}, Key: {}, Range Header: {}", bucket, actual, range);
-
+        int reqID = requests.submit("RESTORE", bucket, actual, request.getContentLength());
+        System.out.println("Request ID: " + reqID);
+        reportProgressSafely(
+                reqID,
+                12,
+                0,
+                "",
+                ""
+        );
         // Resolve and validate the object before opening its NLD file.
         Path p = store.existing(bucket, actual);
         long size = Files.size(p), start = 0, end = size - 1;
@@ -391,7 +394,6 @@ public class S3Controller {
         long lastModified = m.lastModified() != null
                 ? m.lastModified().toEpochMilli()
                 : Files.getLastModifiedTime(p).toMillis();
-
         h.setLastModified(lastModified);
         h.set(HttpHeaders.ACCEPT_RANGES, "bytes");
         h.set("x-amz-storage-class", m.storageClass());
@@ -400,7 +402,173 @@ public class S3Controller {
             h.set(HttpHeaders.CONTENT_RANGE, "bytes " + start + "-" + end + "/" + size);
         }
         // BoundedInputStream prevents a range response from reading past its end.
-        return new ResponseEntity<>(new InputStreamResource(new BoundedInputStream(in, count)), h, status);
+        //  return new ResponseEntity<>(new InputStreamResource(new BoundedInputStream(in, count)), h, status);
+        InputStream downloadStream = new DownloadProgressInputStream(
+                new BoundedInputStream(in, count),
+                reqID,
+                count,
+                m.etag()
+        );
+
+        return new ResponseEntity<>(
+                new InputStreamResource(downloadStream),
+                h,
+                status
+        );
+    }
+
+    private class DownloadProgressInputStream extends FilterInputStream {
+
+        private final int reqID;
+        private final long totalBytes;
+        private final String checksum;
+
+        private long transferred;
+        private long nextProgressTime;
+        private boolean finished;
+
+        DownloadProgressInputStream(
+                InputStream in,
+                int reqID,
+                long totalBytes,
+                String checksum
+        ) {
+            super(in);
+            this.reqID = reqID;
+            this.totalBytes = totalBytes;
+            this.checksum = checksum == null ? "" : checksum;
+            this.nextProgressTime
+                    = System.nanoTime()
+                    + TimeUnit.SECONDS.toNanos(5);
+        }
+
+        @Override
+        public int read() throws IOException {
+            try {
+                int value = super.read();
+
+                if (value >= 0) {
+                    bytesRead(1);
+                } else {
+                    complete();
+                }
+
+                return value;
+            } catch (IOException e) {
+                failed(e);
+                throw e;
+            }
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length)
+                throws IOException {
+            try {
+                int read = super.read(buffer, offset, length);
+
+                if (read > 0) {
+                    bytesRead(read);
+                } else if (read == -1) {
+                    complete();
+                }
+
+                return read;
+            } catch (IOException e) {
+                failed(e);
+                throw e;
+            }
+        }
+
+        private void bytesRead(int count) {
+            transferred += count;
+
+            if (transferred >= totalBytes) {
+                complete();
+                return;
+            }
+
+            long now = System.nanoTime();
+
+            if (now >= nextProgressTime) {
+                int progress = totalBytes == 0
+                        ? 100
+                        : (int) Math.min(
+                                99,
+                                (transferred * 100.0) / totalBytes
+                        );
+
+                reportProgressSafely(
+                        reqID,
+                        12,
+                        progress,
+                        "",
+                        ""
+                );
+
+                nextProgressTime
+                        = now + TimeUnit.SECONDS.toNanos(5);
+            }
+        }
+
+        private void complete() {
+            if (finished) {
+                return;
+            }
+
+            finished = true;
+
+            reportProgressSafely(
+                    reqID,
+                    3,
+                    100,
+                    "",
+                    checksum
+            );
+        }
+
+        private void failed(IOException error) {
+            if (finished) {
+                return;
+            }
+
+            finished = true;
+
+            reportProgressSafely(
+                    reqID,
+                    4,
+                    progress(),
+                    error.getMessage() == null
+                    ? "Download failed"
+                    : error.getMessage(),
+                    ""
+            );
+        }
+
+        private int progress() {
+            return totalBytes == 0
+                    ? 0
+                    : (int) Math.min(
+                            99,
+                            (transferred * 100.0) / totalBytes
+                    );
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (!finished && transferred < totalBytes) {
+                finished = true;
+
+                reportProgressSafely(
+                        reqID,
+                        5,
+                        progress(),
+                        "Download cancelled before completion",
+                        ""
+                );
+            }
+
+            super.close();
+        }
     }
 
     /**
@@ -415,7 +583,7 @@ public class S3Controller {
     public ResponseEntity<?> put(@PathVariable String bucket,
             @PathVariable String key,
             @RequestHeader(value = "x-amz-storage-class", defaultValue = "STANDARD") String storageClass,
-            HttpServletRequest request) throws IOException {
+            HttpServletRequest request) throws IOException, InterruptedException, ExecutionException {
         logRequest(request);
         String actual = clean(key);
 
@@ -434,16 +602,54 @@ public class S3Controller {
         // Pass the ordinary servlet request stream directly to NearlineStore.
         InputStream inputStream = request.getInputStream();
         long expectedLength = request.getContentLengthLong();
-        requests.submit("ARCHIVE", bucket, actual, request.getContentLength());
+        int reqID = requests.submit("ARCHIVE", bucket, actual, request.getContentLength());
+
+        System.out.println("Request ID: " + reqID);
         // NearlineStore validates the key/checksums and atomically publishes the file.
-        NearlineStore.Stored stored = store.put(
-                bucket,
-                actual,
-                inputStream,
-                expectedLength,
-                checksums,
-                request.getHeader(HttpHeaders.IF_MATCH),
-                request.getHeader(HttpHeaders.IF_NONE_MATCH)
+        NearlineStore.Stored stored;
+
+        try {
+            stored = store.put(
+                    bucket,
+                    actual,
+                    inputStream,
+                    expectedLength,
+                    checksums,
+                    request.getHeader(HttpHeaders.IF_MATCH),
+                    request.getHeader(HttpHeaders.IF_NONE_MATCH),
+                    percent -> {
+                        if (percent < 100) {
+                            reportProgressSafely(
+                                    reqID,
+                                    12,
+                                    percent,
+                                    "",
+                                    ""
+                            );
+                        }
+                    }
+            );
+        } catch (IOException | RuntimeException storageError) {
+            reportProgressSafely(
+                    reqID,
+                    4,
+                    0,
+                    storageError.getMessage() == null
+                    ? "PUT failed"
+                    : storageError.getMessage(),
+                    ""
+            );
+
+            throw storageError;
+        }
+
+// Storage and metadata completed successfully.
+        reportProgressSafely(
+                reqID,
+                3,
+                100,
+                "",
+                stored.etag()
         );
 
         // Make the completed NLD landing visible in the application log.
@@ -457,7 +663,6 @@ public class S3Controller {
         metadata.put(bucket, actual, storageClass, objectHeaders, stored.length(), stored.etag(), stored.lastModified());
 
         // Record the asynchronous archive hand-off; this does not replace NLD storage.
-        // requests.submit("ARCHIVE", bucket, actual);
         String rawEtag = stored.etag().replace("\"", "");
 
         ResponseEntity.BodyBuilder response = ResponseEntity.ok()
@@ -472,6 +677,39 @@ public class S3Controller {
         }
 
         return response.build();
+    }
+
+    private void reportProgressSafely(
+            int reqID,
+            int state,
+            int progress,
+            String remarks,
+            String checksum
+    ) {
+        try {
+            log.info(
+                    "Sending progress: reqID={}, state={}, progress={}",
+                    reqID,
+                    state,
+                    progress
+            );
+
+            managerClient.setProgress(
+                    reqID,
+                    state,
+                    progress,
+                    remarks,
+                    checksum
+            );
+        } catch (RuntimeException e) {
+            log.error(
+                    "Progress update failed: reqID={}, state={}, progress={}",
+                    reqID,
+                    state,
+                    progress,
+                    e
+            );
+        }
     }
 
     /**

@@ -24,6 +24,19 @@ public class ManagerRegistrationClient {
         this.properties = properties;
     }
 
+    public void setProgress(int reqID, int state, int progress, String remarks, String checksum) {
+
+        RegisterProgress body = new RegisterProgress(
+                reqID, state, progress, "Mover1", remarks, checksum);
+
+        restClient.post()
+                .uri(properties.getProgress().getUrl())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .toBodilessEntity();
+    }
+
     public HeadObjectResponse headObject(String objectName, String category) {
         String url = properties.getHead().getUrl()
                 + "?objectName={objectName}&category={category}";
@@ -33,11 +46,12 @@ public class ManagerRegistrationClient {
                 .retrieve()
                 .body(HeadObjectResponse.class);
     }
-    public void register(
+
+    public RegisterResponse register(
             String operation,
             String category,
             String key,
-            int contentLength
+            long contentLength
     ) {
         GatewayProperties.Manager manager = properties.getManager();
 
@@ -64,12 +78,12 @@ public class ManagerRegistrationClient {
                 manager.getPriority()
         );
 
-        restClient.post()
+        return restClient.post()
                 .uri(manager.getRegisterUrl())
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(body)
                 .retrieve()
-                .toBodilessEntity();
+                .body(RegisterResponse.class);
     }
 
     public record FileItem(
@@ -101,8 +115,8 @@ public class ManagerRegistrationClient {
     public record HeadObjectResponse(
             @JsonProperty("am_object_name")
             String objectName,
-            @JsonProperty("am_objectSize")
-            String objectSize,
+            @JsonProperty("objectSizeBytes")
+            String objectSizeBytes,
             @JsonProperty("am_ObjectChecksum")
             String checksum,
             @JsonProperty("am_archiveDate")
@@ -114,7 +128,33 @@ public class ManagerRegistrationClient {
             ) {
 
         public long contentLength() {
-            return Long.parseLong(objectSize);
+            return Long.parseLong(objectSizeBytes);
         }
+    }
+
+    public record RegisterResponse(
+            @JsonProperty("reqID")
+            int reqID,
+            @JsonProperty("status")
+            int status
+            ) {
+
+    }
+
+    public record RegisterProgress(
+            @JsonProperty("reqID")
+            int reqID,
+            @JsonProperty("state")
+            int state,
+            @JsonProperty("progress")
+            int progress,
+            @JsonProperty("moverName")
+            String moverName,
+            @JsonProperty("remarks")
+            String remarks,
+            @JsonProperty("checksum")
+            String checksum
+            ) {
+
     }
 }

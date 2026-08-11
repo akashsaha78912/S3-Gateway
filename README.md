@@ -72,3 +72,10 @@ The request shapes and XML/error conventions are S3-style, but SigV4 validation 
 
 
 {"userId":"ca14243e-dab8-457b-80e6-efcba86c9ac0","username":"akash","accessKeyId":"NLD_v1Vg7S1ieigtmGXYo7iI5NbA","enabled":true,"createdAt":"2026-07-29T11:15:24.251453700Z"}
+
+/For setprogress 
+state 3=complete
+state 12= processing
+state 4=abort
+state 5=cancel
+/
