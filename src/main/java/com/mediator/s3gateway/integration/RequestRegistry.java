@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -51,7 +52,7 @@ public class RequestRegistry {
      *
      * @return the UUID assigned to the request record
      */
-    public int submit(String operation, String bucket, String key, long contentLength) {
+    public int submit(String operation, String bucket, String key, long contentLength, Map<String,String> userMetadata) {
         String category = store.category(bucket);
         // String id = UUID.randomUUID().toString();
         // Path requestFile = properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests").resolve(id + ".properties");
@@ -90,7 +91,7 @@ public class RequestRegistry {
         //     }
         // });
         ManagerRegistrationClient.RegisterResponse response
-                = managerClient.register(operation, category, key, contentLength);
+                = managerClient.register(operation, category, key, contentLength, userMetadata);
         if (response == null) {
             throw new IllegalStateException(
                     "Manager registration returned an empty response"

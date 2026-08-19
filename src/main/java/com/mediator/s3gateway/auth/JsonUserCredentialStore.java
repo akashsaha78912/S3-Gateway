@@ -1,8 +1,7 @@
 package com.mediator.s3gateway.auth;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -66,34 +65,61 @@ public class JsonUserCredentialStore {
 
   
 
-    private UserDatabase readDatabase() {
-        try {
-            Path usersFile = properties.usersFile();
+    // private UserDatabase readDatabase() {
+    //     try {
+    //         Path usersFile = properties.usersFile();
 
-            if (Files.notExists(usersFile)
-                    || Files.size(usersFile) == 0) {
-                return new UserDatabase(new ArrayList<>());
-            }
+    //         if (Files.notExists(usersFile)
+    //                 || Files.size(usersFile) == 0) {
+    //             return new UserDatabase(new ArrayList<>());
+    //         }
 
-            UserDatabase database = objectMapper.readValue(
-                    usersFile.toFile(),
-                    UserDatabase.class
-            );
+    //         UserDatabase database = objectMapper.readValue(
+    //                 usersFile.toFile(),
+    //                 UserDatabase.class
+    //         );
 
-            if (database.users() == null) {
-                return new UserDatabase(new ArrayList<>());
-            }
+    //         if (database.users() == null) {
+    //             return new UserDatabase(new ArrayList<>());
+    //         }
 
-            return database;
-        } catch (IOException exception) {
+    //         return database;
+    //     } catch (IOException exception) {
+    //         throw new IllegalStateException(
+    //                 "Could not read authentication database",
+    //                 exception
+    //         );
+    //     }
+    // }
+
+ private UserDatabase readDatabase() {
+    try (InputStream inputStream =
+            getClass().getClassLoader()
+                    .getResourceAsStream("users.json")) {
+
+        if (inputStream == null) {
             throw new IllegalStateException(
-                    "Could not read authentication database",
-                    exception
+                    "users.json was not found in the application classpath"
             );
         }
-    }
 
- 
+        UserDatabase database = objectMapper.readValue(
+                inputStream,
+                UserDatabase.class
+        );
+
+        if (database.users() == null) {
+            return new UserDatabase(new ArrayList<>());
+        }
+
+        return database;
+    } catch (IOException exception) {
+        throw new IllegalStateException(
+                "Could not read authentication database",
+                exception
+        );
+    }
+}
 
     /**
      * Root JSON object. A root object makes future schema additions easier.

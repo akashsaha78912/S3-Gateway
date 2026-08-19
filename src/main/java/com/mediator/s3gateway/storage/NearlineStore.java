@@ -5,10 +5,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
@@ -23,7 +21,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.IntConsumer;
 import java.util.stream.Stream;
@@ -242,10 +239,29 @@ public class NearlineStore {
         validateChecksumHeaders(clientChecksums, key);
 
         Path destination = object(bucket, key);
+        // Path parentDir = destination.getParent();
+
+        // // Check if missing on NLD disk, then create directory tree
+        // if (parentDir != null && !Files.exists(parentDir)) {
+        //     Files.createDirectories(parentDir);
+        // }
         Path parentDir = destination.getParent();
 
-        // Check if missing on NLD disk, then create directory tree
-        if (parentDir != null && !Files.exists(parentDir)) {
+        if (parentDir != null) {
+            if (Files.isRegularFile(parentDir)) {
+                // Support zero-byte folder-marker files left by older gateway runs.
+                if (Files.size(parentDir) == 0) {
+                    Files.delete(parentDir);
+                } else {
+                    throw new S3Exception(
+                            409,
+                            "InvalidObjectState",
+                            "The object-key parent exists as a non-empty file",
+                            key
+                    );
+                }
+            }
+
             Files.createDirectories(parentDir);
         }
 
@@ -261,7 +277,7 @@ public class NearlineStore {
      * Streams to a staging file, verifies the content, then publishes it.
      */
     private Stored writeObject(Path destination, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums, IntConsumer progressListener) throws IOException {
-        Path staging = destination.getParent().resolve("." + destination.getFileName() + "." + UUID.randomUUID() + ".uploading");
+        // Path staging = destination.getParent().resolve("." + destination.getFileName() + "." + UUID.randomUUID() + ".uploading");
         long written = 0;
         MessageDigest digest = messageDigest("MD5");
         MessageDigest sha1 = clientChecksums.containsKey("x-amz-checksum-sha1") ? messageDigest("SHA-1") : null;
@@ -271,7 +287,7 @@ public class NearlineStore {
         Checksum crc32c = clientChecksums.containsKey("x-amz-checksum-crc32c") ? new CRC32C() : null;
 
         // Calculate all requested checksums during the same pass that saves bytes.
-        try (InputStream in = input; OutputStream out = Files.newOutputStream(staging, StandardOpenOption.CREATE_NEW)) {
+        try (InputStream in = input; OutputStream out = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {
             byte[] buffer = new byte[1024 * 128];
             int n;
             long lastLoggedPercent = -1;
@@ -315,12 +331,12 @@ public class NearlineStore {
                 }
             }
         } catch (Exception e) {
-            Files.deleteIfExists(staging);
+            Files.deleteIfExists(destination);
             throw e;
         }
 
         if (expectedLength >= 0 && expectedLength != written) {
-            Files.deleteIfExists(staging);
+            Files.deleteIfExists(destination);
             throw new S3Exception(400, "IncompleteBody", "The received body length does not match Content-Length", key);
         }
 
@@ -347,7 +363,7 @@ public class NearlineStore {
         try {
             verifyChecksums(clientChecksums, calculated, key);
         } catch (S3Exception e) {
-            Files.deleteIfExists(staging);
+            Files.deleteIfExists(destination);
             throw e;
         }
 
@@ -356,12 +372,11 @@ public class NearlineStore {
                 .filter(name -> name.startsWith("x-amz-checksum-"))
                 .forEach(name -> responseChecksums.put(name, Base64.getEncoder().encodeToString(calculated.get(name))));
 
-        try {
-            Files.move(staging, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(staging, destination, StandardCopyOption.REPLACE_EXISTING);
-        }
-
+        // try {
+        //     Files.move(destination, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        // } catch (AtomicMoveNotSupportedException e) {
+        //     Files.move(staging, destination, StandardCopyOption.REPLACE_EXISTING);
+        // }
         return new Stored(destination, written, hex(md5), Files.getLastModifiedTime(destination), responseChecksums);
     }
 
@@ -386,6 +401,33 @@ public class NearlineStore {
                     .sorted(Comparator.comparing(Entry::key))
                     .toList();
         }
+    }
+public boolean bucketExists(String bucket) {
+    String category = category(bucket);
+    return Files.isDirectory(categoryPath(category));
+}
+    /**
+     * Represents an S3 zero-byte folder marker as a physical NLD directory.
+     */
+    public Path createDirectory(String bucket, String key) throws IOException {
+        Path directory = object(bucket, key);
+
+        if (Files.isRegularFile(directory)) {
+            // Convert folder-marker files created by the previous implementation.
+            if (Files.size(directory) == 0) {
+                Files.delete(directory);
+            } else {
+                throw new S3Exception(
+                        409,
+                        "InvalidObjectState",
+                        "The folder path already exists as a non-empty object",
+                        key
+                );
+            }
+        }
+
+        Files.createDirectories(directory);
+        return directory;
     }
 
     /**

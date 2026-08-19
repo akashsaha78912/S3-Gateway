@@ -2,6 +2,7 @@ package com.mediator.s3gateway.integration;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -38,6 +39,17 @@ public class ManagerRegistrationClient {
     }
 
     public HeadObjectResponse headObject(String objectName, String category) {
+        String normalizedKey = objectName.startsWith("/")
+                ? objectName.substring(1)
+                : objectName;
+
+        int lastSlash = normalizedKey.lastIndexOf('/');
+        if (lastSlash >= 0) {
+            objectName = normalizedKey.substring(0, lastSlash);
+        } else {
+            objectName = normalizedKey;
+        }
+
         String url = properties.getHead().getUrl()
                 + "?objectName={objectName}&category={category}";
 
@@ -51,15 +63,36 @@ public class ManagerRegistrationClient {
             String operation,
             String category,
             String key,
-            long contentLength
+            long contentLength,
+            Map<String, String> userMetadata
     ) {
         GatewayProperties.Manager manager = properties.getManager();
 
-        String objectName = key.contains("/")
-                ? key.substring(key.lastIndexOf('/') + 1)
+        // String objectName = key.contains("/")
+        //         ? key.substring(key.lastIndexOf('/') + 1)
+        //         : key;
+        // List<FileItem> filelist = new ArrayList<>();
+        // filelist.add(new FileItem(objectName, contentLength));
+        String normalizedKey = key.startsWith("/")
+                ? key.substring(1)
                 : key;
+
+        int lastSlash = normalizedKey.lastIndexOf('/');
+
+        String objectName;
+        String fileName;
+
+        if (lastSlash >= 0) {
+            objectName = normalizedKey.substring(0, lastSlash);
+            fileName = normalizedKey.substring(lastSlash + 1);
+        } else {
+            // Root-level S3 object: no separate folder is available.
+            objectName = normalizedKey;
+            fileName = normalizedKey;
+        }
+
         List<FileItem> filelist = new ArrayList<>();
-        filelist.add(new FileItem(objectName, contentLength));
+        filelist.add(new FileItem(fileName, contentLength));
 
         RegisterRequest body = new RegisterRequest(
                 objectName,
@@ -71,13 +104,14 @@ public class ManagerRegistrationClient {
                 manager.getMoverName(),
                 manager.getDiskName(),
                 manager.getOptions(),
-                manager.getComments(),
+                //  manager.getComments(),
+                userMetadata,
                 manager.getInstanceNumber(),
                 filelist,
                 manager.getMedia(),
                 manager.getPriority()
         );
-
+        System.out.println("RegisterRequest: " + body);
         return restClient.post()
                 .uri(manager.getRegisterUrl())
                 .contentType(MediaType.APPLICATION_JSON)
@@ -103,7 +137,8 @@ public class ManagerRegistrationClient {
             String moverName,
             String DiskName,
             String options,
-            String comments,
+            @JsonProperty("comments")
+            Map<String, String> comments,
             String instancenumber,
             List<FileItem> filelist,
             String media,
@@ -124,7 +159,9 @@ public class ManagerRegistrationClient {
             @JsonProperty("am_object_category")
             String category,
             @JsonProperty("status")
-            int status
+            int status,
+            @JsonProperty("am_objectComments")
+            String comments
             ) {
 
         public long contentLength() {

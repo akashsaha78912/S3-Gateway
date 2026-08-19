@@ -61,8 +61,9 @@ public class AccessKeyAuthenticationFilter
             FilterChain filterChain
     ) throws ServletException, IOException {
 
-        String accessKey = request.getHeader(ACCESS_KEY_HEADER);
-
+        //String accessKey = request.getHeader(ACCESS_KEY_HEADER);
+        
+String accessKey = extractAccessKey(request);
         if (accessKey == null || accessKey.isBlank()) {
             errorWriter.write(
                     request,
@@ -112,4 +113,36 @@ public class AccessKeyAuthenticationFilter
 
         filterChain.doFilter(request, response);
     }
+    private String extractAccessKey(HttpServletRequest request) {
+    // Continue supporting clients that explicitly send the custom header.
+    String accessKey = request.getHeader(ACCESS_KEY_HEADER);
+
+    if (accessKey != null && !accessKey.isBlank()) {
+        return accessKey.trim();
+    }
+
+    // Cyberduck and standard SigV4 S3 clients.
+    String authorization = request.getHeader("Authorization");
+
+    if (authorization == null || authorization.isBlank()) {
+        return null;
+    }
+
+    String credentialPrefix = "Credential=";
+    int start = authorization.indexOf(credentialPrefix);
+
+    if (start < 0) {
+        return null;
+    }
+
+    start += credentialPrefix.length();
+
+    int slash = authorization.indexOf('/', start);
+
+    if (slash < 0) {
+        return null;
+    }
+
+    return authorization.substring(start, slash).trim();
+}
 }

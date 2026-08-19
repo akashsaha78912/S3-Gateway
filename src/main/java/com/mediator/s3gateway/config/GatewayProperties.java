@@ -1,6 +1,7 @@
 package com.mediator.s3gateway.config;
 
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -135,7 +136,7 @@ public class GatewayProperties {
         private String moverName = "Mover1";
         private String diskName = "mover1_disk";
         private String options = "";
-        private String comments = "";
+        private Map<String,String> comments = new HashMap<>();
         private String instanceNumber = "-1";
         private String media = "NLD_DISK";
         private int priority = 50;
@@ -196,12 +197,12 @@ public class GatewayProperties {
             this.options = options;
         }
 
-        public String getComments() {
-            return comments;
+        public Map<String,String> getComments() {
+            return comments == null ? new HashMap<>() : comments;
         }
 
-        public void setComments(String comments) {
-            this.comments = comments;
+        public void setComments(Map<String,String> comments) {
+            this.comments = comments == null ? new HashMap<>() : new HashMap<>(comments);
         }
 
         public String getInstanceNumber() {

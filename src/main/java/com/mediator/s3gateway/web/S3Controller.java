@@ -1,5 +1,6 @@
 package com.mediator.s3gateway.web;
 
+import java.io.ByteArrayOutputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -10,12 +11,14 @@ import java.nio.file.attribute.FileTime;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -42,6 +45,9 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mediator.s3gateway.exception.S3Exception;
 import com.mediator.s3gateway.integration.ManagerRegistrationClient;
 import com.mediator.s3gateway.integration.ManagerRegistrationClient.HeadObjectResponse;
@@ -72,17 +78,28 @@ public class S3Controller {
     private final ObjectMetadataStore metadata;
     private final MultipartUploadStore multipart;
     private final ManagerRegistrationClient managerClient;
+    private final ObjectMapper objectMapper;
 
     /**
      * Spring injects the controller's storage collaborators through this
      * constructor.
      */
-    public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata, MultipartUploadStore multipart, ManagerRegistrationClient managerClient) {
+    public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata, MultipartUploadStore multipart, ManagerRegistrationClient managerClient, ObjectMapper objectMapper) {
         this.store = store;
         this.requests = requests;
         this.metadata = metadata;
         this.multipart = multipart;
         this.managerClient = managerClient;
+        this.objectMapper = objectMapper;
+    }
+
+    @RestController
+    public class HealthController {
+
+        @GetMapping("/health")
+        public ResponseEntity<String> health() {
+            return ResponseEntity.ok("OK");
+        }
     }
 
     /**
@@ -97,8 +114,20 @@ public class S3Controller {
 
         // Build the S3 XML response from the bucket names exposed by the store.
         StringBuilder x = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Buckets>");
+        // for (String b : store.buckets()) {
+        //     x.append("<Bucket><Name>").append(xml(b)).append("</Name></Bucket>");
+        // }
         for (String b : store.buckets()) {
-            x.append("<Bucket><Name>").append(xml(b)).append("</Name></Bucket>");
+            x.append("<Bucket>")
+                    .append("<Name>")
+                    .append(xml(b))
+                    .append("</Name>")
+                    .append("<CreationDate>")
+                    .append(DateTimeFormatter.ISO_INSTANT.format(
+                            java.time.Instant.now()
+                    ))
+                    .append("</CreationDate>")
+                    .append("</Bucket>");
         }
         return x.append("</Buckets></ListAllMyBucketsResult>").toString();
     }
@@ -110,7 +139,7 @@ public class S3Controller {
      * The store validates the S3 bucket name and creates its category directory
      * below the configured nearline root.
      */
-    @PutMapping("/{bucket}")
+    @PutMapping({"/{bucket}", "/{bucket}/"})
     public ResponseEntity<Void> createBucket(@PathVariable String bucket, HttpServletRequest request) throws IOException {
         logRequest(request);
         log.info("Executing CreateBucket operation for bucket: {}", bucket);
@@ -291,13 +320,59 @@ public class S3Controller {
      * <p>
      * Returns the same object headers as GET but does not return file bytes.
      */
-    @RequestMapping(value = "/{bucket}/{*key}", method = RequestMethod.HEAD)
-    public ResponseEntity<Void> head(@PathVariable String bucket, @PathVariable String key, HttpServletRequest request) throws IOException {
+    @RequestMapping(
+            //     value = "/{bucket}/{*key}", method = RequestMethod.HEAD)
+            // public ResponseEntity<Void> head(@PathVariable String bucket, @PathVariable String key, HttpServletRequest request) throws IOException {
+            //     logRequest(request);
+            //     String actual = clean(key);
+            //     log.info("Executing HeadObject - Bucket: {}, Key: {}", bucket, actual);
+            // Path p = store.existing(bucket, actual);
+            // return headers(p, metadata.get(bucket, actual)).build();
+            value = {"/{bucket}", "/{bucket}/", "/{bucket}/{*key}"},
+            method = RequestMethod.HEAD
+    )
+    public ResponseEntity<Void> head(
+            @PathVariable String bucket,
+            @PathVariable(required = false) String key,
+            HttpServletRequest request
+    ) throws IOException {
+
         logRequest(request);
-        String actual = clean(key);
-        log.info("Executing HeadObject - Bucket: {}, Key: {}", bucket, actual);
-        // Path p = store.existing(bucket, actual);
-        // return headers(p, metadata.get(bucket, actual)).build();
+
+        String actual = key == null ? "" : clean(key);
+
+        /*
+     * HeadBucket:
+     *   HEAD /flow-test
+     *   HEAD /flow-test/
+         */
+        if (actual.isBlank()) {
+            log.info("Executing HeadBucket - Bucket: {}", bucket);
+
+            if (!store.bucketExists(bucket)) {
+                throw new S3Exception(
+                        404,
+                        "NoSuchBucket",
+                        "The specified bucket does not exist",
+                        bucket
+                );
+            }
+
+            return ResponseEntity.ok().build();
+        }
+
+        /*
+     * HeadObject:
+     *   HEAD /flow-test/folder/file.mxf
+         */
+        log.info(
+                "Executing HeadObject - Bucket: {}, Key: {}",
+                bucket,
+                actual
+        );
+
+            // Path p = store.existing(bucket, actual);
+            // return headers(p, metadata.get(bucket, actual)).build();
         HeadObjectResponse managerResponse = managerClient.headObject(actual, bucket);
         log.info(
                 "Manager HeadObject response - objectName: {}, category: {}, response: {}",
@@ -342,6 +417,33 @@ public class S3Controller {
                 managerResponse.category()
         );
         headers.set("status", String.valueOf(managerResponse.status()));
+        if (managerResponse.comments() != null
+                && !managerResponse.comments().isBlank()) {
+            try {
+                Map<String, String> userMetadata = objectMapper.readValue(
+                        managerResponse.comments(),
+                        new TypeReference<Map<String, String>>() {
+                }
+                );
+
+                userMetadata.forEach((name, value) -> {
+                    if (name != null && value != null) {
+                        String headerName = name.toLowerCase(Locale.ROOT)
+                                .startsWith("x-amz-meta-")
+                                ? name.toLowerCase(Locale.ROOT)
+                                : "x-amz-meta-" + name.toLowerCase(Locale.ROOT);
+
+                        headers.set(headerName, value);
+                    }
+                });
+            } catch (JsonProcessingException e) {
+                throw new IllegalStateException(
+                        "Manager returned invalid am_objectComments JSON: "
+                        + managerResponse.comments(),
+                        e
+                );
+            }
+        }
         return new ResponseEntity<>(headers, HttpStatus.OK);
     }
 
@@ -360,7 +462,7 @@ public class S3Controller {
         logRequest(request);
         String actual = clean(key);
         log.info("Executing GetObject - Bucket: {}, Key: {}, Range Header: {}", bucket, actual, range);
-        int reqID = requests.submit("RESTORE", bucket, actual, request.getContentLength());
+        int reqID = requests.submit("RESTORE", bucket, actual, request.getContentLength(), Map.of());
         System.out.println("Request ID: " + reqID);
         reportProgressSafely(
                 reqID,
@@ -572,6 +674,190 @@ public class S3Controller {
     }
 
     /**
+     * Removes AWS aws-chunked framing and checksum trailers from an upload
+     * body.
+     *
+     * Example input: 15\r\n fdfdfdslkfjdksjfkdjfk\r\n 0\r\n
+     * x-amz-checksum-crc64nvme:CGazV76CfQI=\r\n \r\n
+     */
+    private static final class AwsChunkedInputStream extends InputStream {
+
+        private static final int MAX_LINE_LENGTH = 8192;
+
+        private final InputStream source;
+
+        private long remainingInChunk;
+        private boolean endOfStream;
+        private boolean consumeChunkEnding;
+
+        private AwsChunkedInputStream(InputStream source) {
+            this.source = source;
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] singleByte = new byte[1];
+            int count = read(singleByte, 0, 1);
+
+            return count == -1 ? -1 : singleByte[0] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] buffer, int offset, int length)
+                throws IOException {
+
+            Objects.checkFromIndexSize(offset, length, buffer.length);
+
+            if (length == 0) {
+                return 0;
+            }
+
+            if (endOfStream) {
+                return -1;
+            }
+
+            prepareNextChunk();
+
+            if (endOfStream) {
+                return -1;
+            }
+
+            int bytesToRead = (int) Math.min(length, remainingInChunk);
+            int bytesRead = source.read(buffer, offset, bytesToRead);
+
+            if (bytesRead == -1) {
+                throw invalidChunkedBody(
+                        "Unexpected end of request body inside an AWS chunk"
+                );
+            }
+
+            remainingInChunk -= bytesRead;
+
+            if (remainingInChunk == 0) {
+                consumeChunkEnding = true;
+            }
+
+            return bytesRead;
+        }
+
+        private void prepareNextChunk() throws IOException {
+            if (remainingInChunk > 0) {
+                return;
+            }
+
+            if (consumeChunkEnding) {
+                requireCrlf();
+                consumeChunkEnding = false;
+            }
+
+            String chunkHeader = readLine();
+
+            if (chunkHeader == null) {
+                throw invalidChunkedBody(
+                        "Unexpected end of request body before chunk header"
+                );
+            }
+
+            // A signed AWS chunk can look like:
+            // 10000;chunk-signature=abcdef...
+            int extensionIndex = chunkHeader.indexOf(';');
+            String sizeText = extensionIndex >= 0
+                    ? chunkHeader.substring(0, extensionIndex)
+                    : chunkHeader;
+
+            try {
+                remainingInChunk = Long.parseLong(
+                        sizeText.trim(),
+                        16
+                );
+            } catch (NumberFormatException exception) {
+                throw invalidChunkedBody(
+                        "Invalid AWS chunk size: " + sizeText
+                );
+            }
+
+            if (remainingInChunk < 0) {
+                throw invalidChunkedBody("AWS chunk size cannot be negative");
+            }
+
+            if (remainingInChunk == 0) {
+                consumeTrailers();
+                endOfStream = true;
+            }
+        }
+
+        private void consumeTrailers() throws IOException {
+            String trailerLine;
+
+            while ((trailerLine = readLine()) != null) {
+                if (trailerLine.isEmpty()) {
+                    return;
+                }
+
+                // Trailer headers, including x-amz-checksum-*, are consumed
+                // here and are not returned as object content.
+            }
+
+            throw invalidChunkedBody(
+                    "Unexpected end of request body inside AWS trailers"
+            );
+        }
+
+        private void requireCrlf() throws IOException {
+            int carriageReturn = source.read();
+            int lineFeed = source.read();
+
+            if (carriageReturn != '\r' || lineFeed != '\n') {
+                throw invalidChunkedBody(
+                        "AWS chunk data is not followed by CRLF"
+                );
+            }
+        }
+
+        private String readLine() throws IOException {
+            ByteArrayOutputStream line
+                    = new ByteArrayOutputStream();
+
+            while (line.size() <= MAX_LINE_LENGTH) {
+                int current = source.read();
+
+                if (current == -1) {
+                    return line.size() == 0
+                            ? null
+                            : line.toString(StandardCharsets.US_ASCII);
+                }
+
+                if (current == '\r') {
+                    int next = source.read();
+
+                    if (next != '\n') {
+                        throw invalidChunkedBody(
+                                "AWS chunk line is not terminated by CRLF"
+                        );
+                    }
+
+                    return line.toString(StandardCharsets.US_ASCII);
+                }
+
+                line.write(current);
+            }
+
+            throw invalidChunkedBody(
+                    "AWS chunk header is too long"
+            );
+        }
+
+        private static IOException invalidChunkedBody(String message) {
+            return new IOException(message);
+        }
+
+        @Override
+        public void close() throws IOException {
+            source.close();
+        }
+    }
+
+    /**
      * Handles PutObject: {@code PUT /{bucket}/{key}}.
      *
      * <p>
@@ -586,7 +872,16 @@ public class S3Controller {
             HttpServletRequest request) throws IOException, InterruptedException, ExecutionException {
         logRequest(request);
         String actual = clean(key);
+// S3 clients such as Cyberduck create folders by uploading a zero-byte
+// object whose key ends with "/". Represent it as an NLD directory.
+        if (actual.endsWith("/") && request.getContentLengthLong() == 0) {
+            store.createDirectory(bucket, actual);
 
+            return ResponseEntity.ok()
+                    .contentLength(0)
+                    .eTag("\"d41d8cd98f00b204e9800998ecf8427e\"")
+                    .build();
+        }
         log.info("Executing PutObject - Bucket: {}, Key: {}, StorageClass: {}", bucket, actual, storageClass);
 
         storageClass = storageClass.toUpperCase(Locale.ROOT);
@@ -602,7 +897,33 @@ public class S3Controller {
         // Pass the ordinary servlet request stream directly to NearlineStore.
         InputStream inputStream = request.getInputStream();
         long expectedLength = request.getContentLengthLong();
-        int reqID = requests.submit("ARCHIVE", bucket, actual, request.getContentLength());
+
+        String contentEncoding
+                = request.getHeader(HttpHeaders.CONTENT_ENCODING);
+
+        if (contentEncoding != null
+                && Arrays.stream(contentEncoding.split(","))
+                        .map(String::trim)
+                        .anyMatch("aws-chunked"::equalsIgnoreCase)) {
+
+            inputStream = new AwsChunkedInputStream(inputStream);
+
+            String decodedLength
+                    = request.getHeader("x-amz-decoded-content-length");
+
+            if (decodedLength == null || decodedLength.isBlank()) {
+                throw new S3Exception(
+                        400,
+                        "InvalidRequest",
+                        "Missing x-amz-decoded-content-length",
+                        actual
+                );
+            }
+
+            expectedLength = Long.parseLong(decodedLength);
+        }
+        log.info("key: {}", actual);
+        int reqID = requests.submit("ARCHIVE", bucket, actual, request.getContentLength(), objectHeaders.userMetadata());
 
         System.out.println("Request ID: " + reqID);
         // NearlineStore validates the key/checksums and atomically publishes the file.
@@ -808,16 +1129,72 @@ public class S3Controller {
             HttpServletRequest request) throws IOException {
 
         logRequest(request);
+        // String actual = clean(key);
+        // String partEtag = multipart.putPart(
+        //         uploadId,
+        //         bucket,
+        //         actual,
+        //         partNumber,
+        //         request.getInputStream(),
+        //         request.getContentLengthLong()
+        // );
         String actual = clean(key);
+
+        InputStream inputStream = request.getInputStream();
+        long expectedLength = request.getContentLengthLong();
+
+        String contentEncoding
+                = request.getHeader(HttpHeaders.CONTENT_ENCODING);
+
+        boolean awsChunked = contentEncoding != null
+                && Arrays.stream(contentEncoding.split(","))
+                        .map(String::trim)
+                        .anyMatch("aws-chunked"::equalsIgnoreCase);
+
+        if (awsChunked) {
+            String decodedLength
+                    = request.getHeader("x-amz-decoded-content-length");
+
+            if (decodedLength == null || decodedLength.isBlank()) {
+                throw new S3Exception(
+                        400,
+                        "InvalidRequest",
+                        "Missing x-amz-decoded-content-length",
+                        actual
+                );
+            }
+
+            try {
+                expectedLength = Long.parseLong(decodedLength);
+            } catch (NumberFormatException exception) {
+                throw new S3Exception(
+                        400,
+                        "InvalidRequest",
+                        "Invalid x-amz-decoded-content-length",
+                        decodedLength
+                );
+            }
+
+            inputStream = new AwsChunkedInputStream(inputStream);
+        }
+
+        // String partEtag = multipart.putPart(
+        //         uploadId,
+        //         bucket,
+        //         actual,
+        //         partNumber,
+        //         inputStream,
+        //         expectedLength
+        // );
         String partEtag = multipart.putPart(
                 uploadId,
                 bucket,
                 actual,
                 partNumber,
-                request.getInputStream(),
-                request.getContentLengthLong()
+                inputStream,
+                expectedLength,
+                request.getHeader("Content-MD5")
         );
-
         return ResponseEntity.ok()
                 .contentLength(0)
                 .eTag("\"" + partEtag + "\"")
@@ -837,7 +1214,8 @@ public class S3Controller {
         logRequest(request);
         String actual = clean(key);
 
-        List<Integer> requestedParts = parseCompletedPartNumbers(completeXml);
+        List<MultipartUploadStore.CompletedPart> requestedParts
+                = parseCompletedParts(completeXml);
         MultipartUploadStore.CompletedMultipart completed = multipart.complete(uploadId, bucket, actual, requestedParts);
 
         NearlineStore.Stored stored;
@@ -855,20 +1233,44 @@ public class S3Controller {
                 Map.of()
         );
 
-        metadata.put(bucket, actual, completed.storageClass(), objectHeaders, stored.length(), stored.etag(), stored.lastModified());
-        //   requests.submit("ARCHIVE", bucket, actual);
+        // metadata.put(bucket, actual, completed.storageClass(), objectHeaders, stored.length(), stored.etag(), stored.lastModified());
+        // requests.submit("ARCHIVE", bucket, actual);
+        // multipart.cleanup(uploadId);
+        // String body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        //         + "<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+        //         + "<Bucket>" + xml(bucket) + "</Bucket>"
+        //         + "<Key>" + xml(actual) + "</Key>"
+        //         + "<ETag>\"" + xml(stored.etag()) + "\"</ETag>"
+        //         + "</CompleteMultipartUploadResult>";
+        // return ResponseEntity.ok()
+        //         .contentType(MediaType.APPLICATION_XML)
+        //         .eTag("\"" + stored.etag() + "\"")
+        //         .body(body);
+        metadata.put(
+                bucket,
+                actual,
+                completed.storageClass(),
+                objectHeaders,
+                stored.length(),
+                completed.etag(),
+                stored.lastModified()
+        );
+
+        //  requests.submit("ARCHIVE", bucket, actual);
         multipart.cleanup(uploadId);
 
-        String body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-                + "<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+        String body
+                = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<CompleteMultipartUploadResult "
+                + "xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
                 + "<Bucket>" + xml(bucket) + "</Bucket>"
                 + "<Key>" + xml(actual) + "</Key>"
-                + "<ETag>\"" + xml(stored.etag()) + "\"</ETag>"
+                + "<ETag>\"" + xml(completed.etag()) + "\"</ETag>"
                 + "</CompleteMultipartUploadResult>";
 
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_XML)
-                .eTag("\"" + stored.etag() + "\"")
+                .eTag("\"" + completed.etag() + "\"")
                 .body(body);
     }
 
@@ -885,14 +1287,137 @@ public class S3Controller {
         return ResponseEntity.noContent().build();
     }
 
-    private static List<Integer> parseCompletedPartNumbers(String body) {
-        java.util.regex.Matcher matcher = java.util.regex.Pattern
-                .compile("<PartNumber>\\s*(\\d+)\\s*</PartNumber>")
-                .matcher(body == null ? "" : body);
+    // private static List<Integer> parseCompletedPartNumbers(String body) {
+    //     java.util.regex.Matcher matcher = java.util.regex.Pattern
+    //             .compile("<PartNumber>\\s*(\\d+)\\s*</PartNumber>")
+    //             .matcher(body == null ? "" : body);
+    //     List<Integer> parts = new java.util.ArrayList<>();
+    //     while (matcher.find()) {
+    //         parts.add(Integer.parseInt(matcher.group(1)));
+    //     }
+    //     return parts;
+    // }
+// private static List<MultipartUploadStore.CompletedPart>
+//         parseCompletedParts(String body) {
+//     String xmlBody = body == null ? "" : body;
+//     java.util.regex.Pattern partPattern =
+//             java.util.regex.Pattern.compile(
+//                     "<Part>\\s*"
+//                     + "<PartNumber>\\s*(\\d+)\\s*</PartNumber>\\s*"
+//                     + "<ETag>\\s*(.*?)\\s*</ETag>\\s*"
+//                     + "</Part>",
+//                     java.util.regex.Pattern.CASE_INSENSITIVE
+//                     | java.util.regex.Pattern.DOTALL
+//             );
+//     java.util.regex.Matcher matcher =
+//             partPattern.matcher(xmlBody);
+//     List<MultipartUploadStore.CompletedPart> parts =
+//             new java.util.ArrayList<>();
+//     while (matcher.find()) {
+//         int partNumber =
+//                 Integer.parseInt(matcher.group(1));
+//         String etag = matcher.group(2)
+//                 .replace("&quot;", "\"")
+//                 .trim();
+//         parts.add(
+//                 new MultipartUploadStore.CompletedPart(
+//                         partNumber,
+//                         etag
+//                 )
+//         );
+//     }
+//     if (parts.isEmpty()) {
+//         throw new S3Exception(
+//                 400,
+//                 "MalformedXML",
+//                 "CompleteMultipartUpload must contain PartNumber and ETag values",
+//                 ""
+//         );
+//     }
+//     return parts;
+// }
+    private static List<MultipartUploadStore.CompletedPart>
+            parseCompletedParts(String body) {
 
-        List<Integer> parts = new java.util.ArrayList<>();
-        while (matcher.find()) {
-            parts.add(Integer.parseInt(matcher.group(1)));
+        String xmlBody = body == null ? "" : body;
+
+        /*
+     * First find each Part block. Extract PartNumber and ETag independently
+     * so their order and additional checksum elements do not matter.
+         */
+        java.util.regex.Pattern partBlockPattern
+                = java.util.regex.Pattern.compile(
+                        "<(?:\\w+:)?Part\\b[^>]*>(.*?)"
+                        + "</(?:\\w+:)?Part>",
+                        java.util.regex.Pattern.CASE_INSENSITIVE
+                        | java.util.regex.Pattern.DOTALL
+                );
+
+        java.util.regex.Pattern partNumberPattern
+                = java.util.regex.Pattern.compile(
+                        "<(?:\\w+:)?PartNumber\\b[^>]*>"
+                        + "\\s*(\\d+)\\s*"
+                        + "</(?:\\w+:)?PartNumber>",
+                        java.util.regex.Pattern.CASE_INSENSITIVE
+                        | java.util.regex.Pattern.DOTALL
+                );
+
+        java.util.regex.Pattern etagPattern
+                = java.util.regex.Pattern.compile(
+                        "<(?:\\w+:)?ETag\\b[^>]*>"
+                        + "\\s*(.*?)\\s*"
+                        + "</(?:\\w+:)?ETag>",
+                        java.util.regex.Pattern.CASE_INSENSITIVE
+                        | java.util.regex.Pattern.DOTALL
+                );
+
+        java.util.regex.Matcher partBlockMatcher
+                = partBlockPattern.matcher(xmlBody);
+
+        List<MultipartUploadStore.CompletedPart> parts
+                = new java.util.ArrayList<>();
+
+        while (partBlockMatcher.find()) {
+            String partBlock = partBlockMatcher.group(1);
+
+            java.util.regex.Matcher numberMatcher
+                    = partNumberPattern.matcher(partBlock);
+
+            java.util.regex.Matcher etagMatcher
+                    = etagPattern.matcher(partBlock);
+
+            if (!numberMatcher.find() || !etagMatcher.find()) {
+                throw new S3Exception(
+                        400,
+                        "MalformedXML",
+                        "Every Part must contain PartNumber and ETag",
+                        ""
+                );
+            }
+
+            int partNumber
+                    = Integer.parseInt(numberMatcher.group(1));
+
+            String etag = etagMatcher.group(1)
+                    .replace("&quot;", "\"")
+                    .replace("&#34;", "\"")
+                    .trim();
+
+            parts.add(
+                    new MultipartUploadStore.CompletedPart(
+                            partNumber,
+                            etag
+                    )
+            );
+        }
+
+        if (parts.isEmpty()) {
+            throw new S3Exception(
+                    400,
+                    "MalformedXML",
+                    "CompleteMultipartUpload must contain at least one Part",
+                    ""
+            );
         }
 
         return parts;
@@ -1013,19 +1538,55 @@ public class S3Controller {
     /**
      * Extracts persistable object headers from a PutObject request.
      */
-    private static ObjectMetadataStore.ObjectHeaders requestHeaders(HttpServletRequest request) {
+    // private static ObjectMetadataStore.ObjectHeaders requestHeaders(HttpServletRequest request) {
+    //     Map<String, String> userMetadata = new TreeMap<>();
+    //     Enumeration<String> names = request.getHeaderNames();
+    //     while (names != null && names.hasMoreElements()) {
+    //         String name = names.nextElement();
+    //         if (name.toLowerCase(Locale.ROOT).startsWith("x-amz-meta-")) {
+    //             userMetadata.put(name.toLowerCase(Locale.ROOT), request.getHeader(name));
+    //         }
+    //     }
+    //     return new ObjectMetadataStore.ObjectHeaders(contentType(request.getContentType()).toString(), request
+    //             .getHeader(HttpHeaders.CACHE_CONTROL), request.getHeader(HttpHeaders.CONTENT_DISPOSITION), request
+    //             .getHeader(HttpHeaders.CONTENT_ENCODING), request.getHeader(HttpHeaders.CONTENT_LANGUAGE), request
+    //             .getHeader(HttpHeaders.EXPIRES), userMetadata);
+    // }
+    private static ObjectMetadataStore.ObjectHeaders requestHeaders(
+            HttpServletRequest request
+    ) {
         Map<String, String> userMetadata = new TreeMap<>();
         Enumeration<String> names = request.getHeaderNames();
+
         while (names != null && names.hasMoreElements()) {
             String name = names.nextElement();
+
             if (name.toLowerCase(Locale.ROOT).startsWith("x-amz-meta-")) {
-                userMetadata.put(name.toLowerCase(Locale.ROOT), request.getHeader(name));
+                userMetadata.put(
+                        name.toLowerCase(Locale.ROOT),
+                        request.getHeader(name)
+                );
             }
         }
-        return new ObjectMetadataStore.ObjectHeaders(contentType(request.getContentType()).toString(), request
-                .getHeader(HttpHeaders.CACHE_CONTROL), request.getHeader(HttpHeaders.CONTENT_DISPOSITION), request
-                .getHeader(HttpHeaders.CONTENT_ENCODING), request.getHeader(HttpHeaders.CONTENT_LANGUAGE), request
-                .getHeader(HttpHeaders.EXPIRES), userMetadata);
+
+        String contentEncoding
+                = request.getHeader(HttpHeaders.CONTENT_ENCODING);
+
+        // aws-chunked describes AWS upload transport framing.
+        // It must not become permanent object metadata.
+        if ("aws-chunked".equalsIgnoreCase(contentEncoding)) {
+            contentEncoding = null;
+        }
+
+        return new ObjectMetadataStore.ObjectHeaders(
+                contentType(request.getContentType()).toString(),
+                request.getHeader(HttpHeaders.CACHE_CONTROL),
+                request.getHeader(HttpHeaders.CONTENT_DISPOSITION),
+                contentEncoding,
+                request.getHeader(HttpHeaders.CONTENT_LANGUAGE),
+                request.getHeader(HttpHeaders.EXPIRES),
+                userMetadata
+        );
     }
 
     /**

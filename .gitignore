@@ -11,6 +11,8 @@ src/main/resources/application.yml
 # Ignore keystore file
 src/main/resources/keystore.p12
 
+src/main/resources/users.json
+
 # Build Outputs
 target/
 build/
