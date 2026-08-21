@@ -52,7 +52,7 @@ public class RequestRegistry {
      *
      * @return the UUID assigned to the request record
      */
-    public int submit(String operation, String bucket, String key, long contentLength, Map<String,String> userMetadata) {
+    public int submit(String operation, String bucket, String key, long contentLength, Map<String,String> userMetadata,Map<String, String> tags) {
         String category = store.category(bucket);
         // String id = UUID.randomUUID().toString();
         // Path requestFile = properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests").resolve(id + ".properties");
@@ -91,7 +91,7 @@ public class RequestRegistry {
         //     }
         // });
         ManagerRegistrationClient.RegisterResponse response
-                = managerClient.register(operation, category, key, contentLength, userMetadata);
+                = managerClient.register(operation, category, key, contentLength, userMetadata,tags);
         if (response == null) {
             throw new IllegalStateException(
                     "Manager registration returned an empty response"

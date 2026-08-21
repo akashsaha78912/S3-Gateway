@@ -25,6 +25,9 @@ import java.util.TreeSet;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilderFactory;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.InputStreamResource;
@@ -44,13 +47,15 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mediator.s3gateway.exception.S3Exception;
 import com.mediator.s3gateway.integration.ManagerRegistrationClient;
 import com.mediator.s3gateway.integration.ManagerRegistrationClient.HeadObjectResponse;
+import com.mediator.s3gateway.integration.ManagerRegistrationClient.InstanceResponse;
 import com.mediator.s3gateway.integration.RequestRegistry;
 import com.mediator.s3gateway.storage.MultipartUploadStore;
 import com.mediator.s3gateway.storage.NearlineStore;
@@ -93,15 +98,10 @@ public class S3Controller {
         this.objectMapper = objectMapper;
     }
 
-    @RestController
-    public class HealthController {
-
-        @GetMapping("/health")
-        public ResponseEntity<String> health() {
-            return ResponseEntity.ok("OK");
-        }
-    }
-
+    // @GetMapping("/health")
+    // public ResponseEntity<String> health() {
+    //     return ResponseEntity.ok("OK");
+    // }
     /**
      * Handles S3 ListBuckets: {@code GET /}.
      *
@@ -371,13 +371,18 @@ public class S3Controller {
                 actual
         );
 
-            // Path p = store.existing(bucket, actual);
-            // return headers(p, metadata.get(bucket, actual)).build();
+        // Path p = store.existing(bucket, actual);
+        // return headers(p, metadata.get(bucket, actual)).build();
         HeadObjectResponse managerResponse = managerClient.headObject(actual, bucket);
+        String media = managerResponse.instances().stream()
+                .findFirst()
+                .map(InstanceResponse::media)
+                .orElse(null);
         log.info(
                 "Manager HeadObject response - objectName: {}, category: {}, response: {}",
                 actual,
                 bucket,
+                media,
                 managerResponse
         );
         if (managerResponse == null || managerResponse.status() != 1000) {
@@ -420,12 +425,14 @@ public class S3Controller {
         if (managerResponse.comments() != null
                 && !managerResponse.comments().isBlank()) {
             try {
-                Map<String, String> userMetadata = objectMapper.readValue(
-                        managerResponse.comments(),
-                        new TypeReference<Map<String, String>>() {
-                }
-                );
-
+                // Map<String, String> userMetadata = objectMapper.readValue(
+                //         managerResponse.comments(),
+                //         new TypeReference<Map<String, String>>() {
+                // }
+                // );
+                ManagerRegistrationClient.S3Attributes attributes
+                        = objectMapper.readValue(managerResponse.comments(), ManagerRegistrationClient.S3Attributes.class);
+                Map<String, String> userMetadata = attributes.userMetadata();
                 userMetadata.forEach((name, value) -> {
                     if (name != null && value != null) {
                         String headerName = name.toLowerCase(Locale.ROOT)
@@ -462,7 +469,7 @@ public class S3Controller {
         logRequest(request);
         String actual = clean(key);
         log.info("Executing GetObject - Bucket: {}, Key: {}, Range Header: {}", bucket, actual, range);
-        int reqID = requests.submit("RESTORE", bucket, actual, request.getContentLength(), Map.of());
+        int reqID = requests.submit("RESTORE", bucket, actual, request.getContentLength(), Map.of(), Map.of());
         System.out.println("Request ID: " + reqID);
         reportProgressSafely(
                 reqID,
@@ -865,7 +872,7 @@ public class S3Controller {
      * the object write succeeds, this method persists its HTTP metadata,
      * records the archive request and returns the calculated ETag.
      */
-    @PutMapping(value = "/{bucket}/{*key}", params = {"!partNumber", "!uploadId"})
+    @PutMapping(value = "/{bucket}/{*key}", params = {"!partNumber", "!uploadId", "!tagging"})
     public ResponseEntity<?> put(@PathVariable String bucket,
             @PathVariable String key,
             @RequestHeader(value = "x-amz-storage-class", defaultValue = "STANDARD") String storageClass,
@@ -892,6 +899,7 @@ public class S3Controller {
 
         // Capture standard representation headers and all x-amz-meta-* values.
         ObjectMetadataStore.ObjectHeaders objectHeaders = requestHeaders(request);
+        Map< String, String> tags = requestTags(request);
         Map<String, String> checksums = clientChecksums(request);
 
         // Pass the ordinary servlet request stream directly to NearlineStore.
@@ -923,7 +931,7 @@ public class S3Controller {
             expectedLength = Long.parseLong(decodedLength);
         }
         log.info("key: {}", actual);
-        int reqID = requests.submit("ARCHIVE", bucket, actual, request.getContentLength(), objectHeaders.userMetadata());
+        int reqID = requests.submit("ARCHIVE", bucket, actual, request.getContentLength(), objectHeaders.userMetadata(), tags);
 
         System.out.println("Request ID: " + reqID);
         // NearlineStore validates the key/checksums and atomically publishes the file.
@@ -1056,6 +1064,8 @@ public class S3Controller {
             metadata.restored(bucket, actual, restoreDays(restoreRequest));
         }
         // requests.submit("RESTORE", bucket, actual);
+        // int reqID = requests.submit("RESTORE", bucket, actual, request.getContentLength(), Map.of(), Map.of());
+
         return ResponseEntity.accepted().header("x-amz-restore", restoreHeader(metadata.get(bucket, actual))).build();
     }
 
@@ -1286,6 +1296,110 @@ public class S3Controller {
         multipart.abort(uploadId, bucket, clean(key));
         return ResponseEntity.noContent().build();
     }
+//Comment Updated controller first call head object to get that object then update the comment field using s3 compatible api
+
+    @PutMapping(value = "/{bucket}/{*key}", params = "tagging")
+    public ResponseEntity<Void> putObjectTagging(
+            @PathVariable String bucket,
+            @PathVariable String key,
+            HttpServletRequest request
+    ) throws IOException, Exception {
+        logRequest(request);
+        String actual = clean(key);
+
+        ManagerRegistrationClient.HeadObjectResponse managerResponse = managerClient.headObject(actual, bucket);
+        System.out.println(managerResponse);
+
+        if (managerResponse == null || managerResponse.status() != 1000) {
+            throw new S3Exception(404, "NoSuchKey", "The specific object does not exist", actual);
+
+        }
+
+        Map<String, String> tags = parseTaggingXml(request.getInputStream());
+        ManagerRegistrationClient.S3Attributes current;
+        if (managerResponse.comments() == null || managerResponse.comments().isBlank()) {
+            current = new ManagerRegistrationClient.S3Attributes(1, Map.of(), Map.of());
+        } else {
+            current = objectMapper.readValue(managerResponse.comments(), ManagerRegistrationClient.S3Attributes.class);
+        }
+        String comments = objectMapper.writeValueAsString(
+                new ManagerRegistrationClient.S3Attributes(1, current.userMetadata(), tags)
+        );
+        managerClient.setComment(managerResponse.objectName(), managerResponse.category(), comments);
+        return ResponseEntity.ok().build();
+    }
+
+    //Parsing Function
+    private static Map<String, String> parseTaggingXml(InputStream input)
+            throws Exception {
+
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setFeature(
+                "http://apache.org/xml/features/disallow-doctype-decl",
+                true
+        );
+        factory.setFeature(
+                "http://xml.org/sax/features/external-general-entities",
+                false
+        );
+        factory.setFeature(
+                "http://xml.org/sax/features/external-parameter-entities",
+                false
+        );
+        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+        factory.setNamespaceAware(true);
+
+        NodeList tagNodes = factory.newDocumentBuilder()
+                .parse(input)
+                .getElementsByTagNameNS("*", "Tag");
+
+        if (tagNodes.getLength() > 10) {
+            throw new S3Exception(
+                    400,
+                    "InvalidTag",
+                    "An object cannot have more than 10 tags",
+                    "tagging"
+            );
+        }
+
+        Map<String, String> tags = new LinkedHashMap<>();
+
+        for (int i = 0; i < tagNodes.getLength(); i++) {
+            Element tag = (Element) tagNodes.item(i);
+
+            String tagKey = childText(tag, "Key");
+            String tagValue = childText(tag, "Value");
+
+            if (tagKey == null || tagKey.isBlank()) {
+                throw new S3Exception(
+                        400,
+                        "InvalidTag",
+                        "Object tag key cannot be empty",
+                        "tagging"
+                );
+            }
+
+            if (tags.putIfAbsent(tagKey, tagValue == null ? "" : tagValue)
+                    != null) {
+                throw new S3Exception(
+                        400,
+                        "InvalidTag",
+                        "Object tag keys must be unique",
+                        tagKey
+                );
+            }
+        }
+
+        return Map.copyOf(tags);
+    }
+
+    private static String childText(Element parent, String name) {
+        NodeList nodes = parent.getElementsByTagNameNS("*", name);
+        return nodes.getLength() == 0
+                ? null
+                : nodes.item(0).getTextContent();
+    }
 
     // private static List<Integer> parseCompletedPartNumbers(String body) {
     //     java.util.regex.Matcher matcher = java.util.regex.Pattern
@@ -1297,45 +1411,45 @@ public class S3Controller {
     //     }
     //     return parts;
     // }
-// private static List<MultipartUploadStore.CompletedPart>
-//         parseCompletedParts(String body) {
-//     String xmlBody = body == null ? "" : body;
-//     java.util.regex.Pattern partPattern =
-//             java.util.regex.Pattern.compile(
-//                     "<Part>\\s*"
-//                     + "<PartNumber>\\s*(\\d+)\\s*</PartNumber>\\s*"
-//                     + "<ETag>\\s*(.*?)\\s*</ETag>\\s*"
-//                     + "</Part>",
-//                     java.util.regex.Pattern.CASE_INSENSITIVE
-//                     | java.util.regex.Pattern.DOTALL
-//             );
-//     java.util.regex.Matcher matcher =
-//             partPattern.matcher(xmlBody);
-//     List<MultipartUploadStore.CompletedPart> parts =
-//             new java.util.ArrayList<>();
-//     while (matcher.find()) {
-//         int partNumber =
-//                 Integer.parseInt(matcher.group(1));
-//         String etag = matcher.group(2)
-//                 .replace("&quot;", "\"")
-//                 .trim();
-//         parts.add(
-//                 new MultipartUploadStore.CompletedPart(
-//                         partNumber,
-//                         etag
-//                 )
-//         );
-//     }
-//     if (parts.isEmpty()) {
-//         throw new S3Exception(
-//                 400,
-//                 "MalformedXML",
-//                 "CompleteMultipartUpload must contain PartNumber and ETag values",
-//                 ""
-//         );
-//     }
-//     return parts;
-// }
+    // private static List<MultipartUploadStore.CompletedPart>
+    //         parseCompletedParts(String body) {
+    //     String xmlBody = body == null ? "" : body;
+    //     java.util.regex.Pattern partPattern =
+    //             java.util.regex.Pattern.compile(
+    //                     "<Part>\\s*"
+    //                     + "<PartNumber>\\s*(\\d+)\\s*</PartNumber>\\s*"
+    //                     + "<ETag>\\s*(.*?)\\s*</ETag>\\s*"
+    //                     + "</Part>",
+    //                     java.util.regex.Pattern.CASE_INSENSITIVE
+    //                     | java.util.regex.Pattern.DOTALL
+    //             );
+    //     java.util.regex.Matcher matcher =
+    //             partPattern.matcher(xmlBody);
+    //     List<MultipartUploadStore.CompletedPart> parts =
+    //             new java.util.ArrayList<>();
+    //     while (matcher.find()) {
+    //         int partNumber =
+    //                 Integer.parseInt(matcher.group(1));
+    //         String etag = matcher.group(2)
+    //                 .replace("&quot;", "\"")
+    //                 .trim();
+    //         parts.add(
+    //                 new MultipartUploadStore.CompletedPart(
+    //                         partNumber,
+    //                         etag
+    //                 )
+    //         );
+    //     }
+    //     if (parts.isEmpty()) {
+    //         throw new S3Exception(
+    //                 400,
+    //                 "MalformedXML",
+    //                 "CompleteMultipartUpload must contain PartNumber and ETag values",
+    //                 ""
+    //         );
+    //     }
+    //     return parts;
+    // }
     private static List<MultipartUploadStore.CompletedPart>
             parseCompletedParts(String body) {
 
@@ -1561,9 +1675,18 @@ public class S3Controller {
         while (names != null && names.hasMoreElements()) {
             String name = names.nextElement();
 
-            if (name.toLowerCase(Locale.ROOT).startsWith("x-amz-meta-")) {
+            // if (name.toLowerCase(Locale.ROOT).startsWith("x-amz-meta-")) {
+            //     userMetadata.put(
+            //             name.toLowerCase(Locale.ROOT),
+            //             request.getHeader(name)
+            //     );
+            // }
+            String lowername = name.toLowerCase(Locale.ROOT);
+            String metadataPrefix = "x-amz-meta-";
+            if (lowername.startsWith(metadataPrefix)) {
+                String metadataKey = lowername.substring(metadataPrefix.length());
                 userMetadata.put(
-                        name.toLowerCase(Locale.ROOT),
+                        metadataKey,
                         request.getHeader(name)
                 );
             }
@@ -1617,7 +1740,14 @@ public class S3Controller {
         set(target, HttpHeaders.CONTENT_ENCODING, h.contentEncoding());
         set(target, HttpHeaders.CONTENT_LANGUAGE, h.contentLanguage());
         set(target, HttpHeaders.EXPIRES, h.expires());
-        h.userMetadata().forEach(target::set);
+        h.userMetadata().forEach((name, value) -> {
+            String headerName = name.toLowerCase(Locale.ROOT)
+                    .startsWith("x-amz-meta-")
+                    ? name.toLowerCase(Locale.ROOT)
+                    : "x-amz-meta-" + name.toLowerCase(Locale.ROOT);
+
+            target.set(headerName, value);
+        });
     }
 
     /**
@@ -1736,6 +1866,37 @@ public class S3Controller {
             }
             return n;
         }
+    }
+
+    private static Map<String, String> requestTags(
+            HttpServletRequest request
+    ) {
+        String taggingHeader = request.getHeader("x-amz-tagging");
+        if (taggingHeader == null || taggingHeader.isBlank()) {
+            return Map.of();
+        }
+
+        Map<String, String> tags = new LinkedHashMap<>();
+
+        for (String item : taggingHeader.split("&")) {
+            String[] pair = item.split("=", 2);
+            String key = java.net.URLDecoder.decode(pair[0], StandardCharsets.UTF_8);
+
+            String value = pair.length == 2 ? java.net.URLDecoder.decode(pair[1], StandardCharsets.UTF_8) : "";
+            if (key.isBlank()) {
+                throw new S3Exception(400, "InvalidTag", "Object tag key cannot be empty", "x-amz-tagging");
+            }
+            if (tags.containsKey(key)) {
+                throw new S3Exception(400, "InvalidTag", "Object tag key must be unique", key);
+            }
+            tags.put(key, value);
+
+        }
+        if (tags.size() > 10) {
+            throw new S3Exception(400, "InvalidTag", "An object cannot have more than 10 tags", "x-amz-tagging");
+        }
+        return Map.copyOf(tags);
+
     }
 
 }

@@ -19,7 +19,7 @@ public class GatewayProperties {
     private Manager manager = new Manager();
     private Head head = new Head();
     private Progress progress = new Progress();
-
+    private UpdateComment updateComment= new UpdateComment();
     public Manager getManager() {
         return manager;
     }
@@ -40,6 +40,12 @@ public class GatewayProperties {
     }
     public void setProgress(Progress progress) {
         this.progress = progress;
+    }
+    public void setComment(UpdateComment updateComment){
+        this.updateComment=updateComment;
+    }
+    public UpdateComment getComment(){
+        return updateComment;
     }
 
     /**
@@ -112,6 +118,16 @@ public class GatewayProperties {
             this.url = url;
         }
 
+    }
+    public static class UpdateComment{
+        public String url;
+
+        public String getUrl(){
+            return url;
+        }
+        public void setUrl(String url){
+            this.url=url;
+        }
     }
 
     public static class Head {

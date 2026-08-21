@@ -1,28 +1,37 @@
 package com.mediator.s3gateway.integration;
 
+//import java.net.http.HttpHeaders;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mediator.s3gateway.config.GatewayProperties;
+import com.mediator.s3gateway.exception.S3Exception;
 
 @Service
 public class ManagerRegistrationClient {
 
     private final RestClient restClient;
     private final GatewayProperties properties;
+    private final ObjectMapper objectMapper;
 
     public ManagerRegistrationClient(
             RestClient.Builder restClientBuilder,
-            GatewayProperties properties
+            GatewayProperties properties,
+            ObjectMapper objectMapper
     ) {
         this.restClient = restClientBuilder.build();
         this.properties = properties;
+        this.objectMapper = objectMapper;
     }
 
     public void setProgress(int reqID, int state, int progress, String remarks, String checksum) {
@@ -36,6 +45,23 @@ public class ManagerRegistrationClient {
                 .body(body)
                 .retrieve()
                 .toBodilessEntity();
+    }
+
+    public void setComment(String Objectname, String Category, String comments){
+                String url=properties.getComment().getUrl();
+                UpdateComment body= new UpdateComment(Objectname, Category, comments);
+
+                restClient.post()
+                .uri(url)
+                .header(             HttpHeaders.AUTHORIZATION,
+                    "Bearer eI0O1WW7Mi7Ik6OAMCYCxfO8E16Li-5f"
+            )
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(body)
+                .retrieve()
+                .toBodilessEntity();
+
+
     }
 
     public HeadObjectResponse headObject(String objectName, String category) {
@@ -64,15 +90,10 @@ public class ManagerRegistrationClient {
             String category,
             String key,
             long contentLength,
-            Map<String, String> userMetadata
+            Map<String, String> userMetadata,
+            Map<String, String> tags
     ) {
         GatewayProperties.Manager manager = properties.getManager();
-
-        // String objectName = key.contains("/")
-        //         ? key.substring(key.lastIndexOf('/') + 1)
-        //         : key;
-        // List<FileItem> filelist = new ArrayList<>();
-        // filelist.add(new FileItem(objectName, contentLength));
         String normalizedKey = key.startsWith("/")
                 ? key.substring(1)
                 : key;
@@ -93,6 +114,20 @@ public class ManagerRegistrationClient {
 
         List<FileItem> filelist = new ArrayList<>();
         filelist.add(new FileItem(fileName, contentLength));
+        String comments;
+        try {
+            comments = objectMapper.writeValueAsString(new S3Attributes(1, userMetadata, tags));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException(
+                    "Unable to serialize S3 metadata and tags",
+                    e
+            );
+        }
+        int commentSize=comments.getBytes(StandardCharsets.UTF_8).length;
+        if (commentSize > 4096) {
+            throw new S3Exception(400, "MetadataTooLarge", "combined metadata and tags exceed the manager comments limit", key);
+
+        }
 
         RegisterRequest body = new RegisterRequest(
                 objectName,
@@ -105,7 +140,7 @@ public class ManagerRegistrationClient {
                 manager.getDiskName(),
                 manager.getOptions(),
                 //  manager.getComments(),
-                userMetadata,
+                comments,
                 manager.getInstanceNumber(),
                 filelist,
                 manager.getMedia(),
@@ -138,7 +173,7 @@ public class ManagerRegistrationClient {
             String DiskName,
             String options,
             @JsonProperty("comments")
-            Map<String, String> comments,
+            String comments,
             String instancenumber,
             List<FileItem> filelist,
             String media,
@@ -161,13 +196,19 @@ public class ManagerRegistrationClient {
             @JsonProperty("status")
             int status,
             @JsonProperty("am_objectComments")
-            String comments
+            String comments,
+            @JsonProperty("instances")
+            List<InstanceResponse> instances
             ) {
 
         public long contentLength() {
             return Long.parseLong(objectSizeBytes);
         }
     }
+    public record InstanceResponse(
+        @JsonProperty("media")
+        String media
+    ){}
 
     public record RegisterResponse(
             @JsonProperty("reqID")
@@ -194,4 +235,24 @@ public class ManagerRegistrationClient {
             ) {
 
     }
+
+    public record S3Attributes(
+            int version,
+            Map<String, String> userMetadata,
+            Map<String, String> tags
+            ) {
+
+        public S3Attributes {
+            userMetadata = userMetadata == null ? Map.of() : Map.copyOf(userMetadata);
+            tags = tags == null ? Map.of() : Map.copyOf(tags);
+        }
+    }
+    public record UpdateComment(
+        @JsonProperty("objectName")
+        String objectName,
+        @JsonProperty("category")
+        String category,
+        @JsonProperty("comments")
+        String comments
+    ){}
 }

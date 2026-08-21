@@ -17,12 +17,14 @@ import org.springframework.stereotype.Service;
 
 import com.mediator.s3gateway.config.GatewayProperties;
 import com.mediator.s3gateway.exception.S3Exception;
+
 /**
  * Persists object metadata separately from object bytes.
  *
- * <p>Metadata files live below {@code .gateway-metadata}. Category and object
- * key components are Base64 URL encoded so metadata paths remain safe and
- * aliases that resolve to the same category share the same metadata.
+ * <p>
+ * Metadata files live below {@code .gateway-metadata}. Category and object key
+ * components are Base64 URL encoded so metadata paths remain safe and aliases
+ * that resolve to the same category share the same metadata.
  */
 @Service
 public class ObjectMetadataStore {
@@ -31,7 +33,9 @@ public class ObjectMetadataStore {
     private final GatewayProperties properties;
     private final NearlineStore store;
 
-    /** Creates the metadata store using the configured NLD root. */
+    /**
+     * Creates the metadata store using the configured NLD root.
+     */
     public ObjectMetadataStore(GatewayProperties properties, NearlineStore store) {
         this.properties = properties;
         this.store = store;
@@ -59,20 +63,20 @@ public class ObjectMetadataStore {
                 p.getProperty("contentLanguage"),
                 p.getProperty("expires"),
                 userMetadata);
-                long contentLength=parseContentLength(p.getProperty("contentLength"));
-                String etag=p.getProperty("etag");
-                Instant lastModified=parseInstant(p.getProperty("lastModified"));
+        long contentLength = parseContentLength(p.getProperty("contentLength"));
+        String etag = p.getProperty("etag");
+        Instant lastModified = parseInstant(p.getProperty("lastModified"));
 
-        return new Metadata(p.getProperty("storageClass", "STANDARD"), 
-        p.getProperty("restoreExpiry"),
-        contentLength, etag, lastModified,
-         headers);
+        return new Metadata(p.getProperty("storageClass", "STANDARD"),
+                p.getProperty("restoreExpiry"),
+                contentLength, etag, lastModified,
+                headers);
     }
 
     /**
      * Saves storage class, representation headers and x-amz-meta-* values.
      */
-    public void put(String bucket, String key, String storageClass, ObjectHeaders headers,long contentLength,String etag,FileTime lastModified) {
+    public void put(String bucket, String key, String storageClass, ObjectHeaders headers, long contentLength, String etag, FileTime lastModified) {
         Properties p = new Properties();
         p.setProperty("storageClass", storageClass);
         p.setProperty("contentType", headers.contentType() == null || headers.contentType().isBlank() ? DEFAULT_CONTENT_TYPE : headers.contentType());
@@ -101,9 +105,11 @@ public class ObjectMetadataStore {
         }
         p.setProperty("restoreExpiry", Instant.now().plus(Duration.ofDays(Math.max(1, days))).toString());
         write(path, p);
-    }
+    } 
 
-    /** Deletes only the centralized metadata record for an object. */
+    /**
+     * Deletes only the centralized metadata record for an object.
+     */
     public void delete(String bucket, String key) {
         try {
             Files.deleteIfExists(file(bucket, key));
@@ -112,12 +118,14 @@ public class ObjectMetadataStore {
         }
     }
 
-    /** Resolves the safe centralized metadata path for one logical object. */
+    /**
+     * Resolves the safe centralized metadata path for one logical object.
+     */
     private Path file(String bucket, String key) {
         return properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-metadata").
-        resolve(encodedCategory(store.category(bucket))).
-        resolve(Base64.getUrlEncoder().withoutPadding().
-        encodeToString(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + ".properties");
+                resolve(encodedCategory(store.category(bucket))).
+                resolve(Base64.getUrlEncoder().withoutPadding().
+                        encodeToString(key.getBytes(java.nio.charset.StandardCharsets.UTF_8)) + ".properties");
     }
 
     private String encodedCategory(String category) {
@@ -139,7 +147,9 @@ public class ObjectMetadataStore {
         }
     }
 
-    /** Creates parent directories and writes the Java properties document. */
+    /**
+     * Creates parent directories and writes the Java properties document.
+     */
     private void write(Path path, Properties p) {
         try {
             Files.createDirectories(path.getParent());
@@ -172,34 +182,37 @@ public class ObjectMetadataStore {
         }
     }
 
-    /** Complete metadata returned to the controller for one object. */
-    public record Metadata(String storageClass, String restoreExpiry,long contentLength, String etag, Instant lastModified, ObjectHeaders headers) {
+    /**
+     * Complete metadata returned to the controller for one object.
+     */
+    public record Metadata(String storageClass, String restoreExpiry, long contentLength, String etag, Instant lastModified, ObjectHeaders headers) {
 
         public String contentType() {
             return headers.contentType();
         }
     }
+
     private long parseContentLength(String value) {
-    if (value == null || value.isBlank()) {
-        return -1;
+        if (value == null || value.isBlank()) {
+            return -1;
+        }
+
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException exception) {
+            return -1;
+        }
     }
 
-    try {
-        return Long.parseLong(value);
-    } catch (NumberFormatException exception) {
-        return -1;
-    }
-}
+    private Instant parseInstant(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
 
-private Instant parseInstant(String value) {
-    if (value == null || value.isBlank()) {
-        return null;
+        try {
+            return Instant.parse(value);
+        } catch (java.time.format.DateTimeParseException exception) {
+            return null;
+        }
     }
-
-    try {
-        return Instant.parse(value);
-    } catch (java.time.format.DateTimeParseException exception) {
-        return null;
-    }
-}
 }
