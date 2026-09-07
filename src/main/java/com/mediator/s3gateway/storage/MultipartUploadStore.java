@@ -76,23 +76,14 @@ public class MultipartUploadStore {
     //     }
     //     return hex(md5.digest());
     // }
-public String putPart(
-        String uploadId,
-        String bucket,
-        String key,
-        int partNumber,
-        InputStream input,
-        long expectedLength,
-        String suppliedContentMd5
-) throws IOException {
+public String putPart(String uploadId, String bucket, String key, int partNumber, InputStream input, long expectedLength, String suppliedContentMd5) throws IOException {
 
     validatePartNumber(partNumber);
 
     Properties state = state(uploadId);
     validateTarget(state, bucket, key);
 
-    Path partPath =
-            partsDir(uploadId).resolve(partName(partNumber));
+    Path partPath =  partsDir(uploadId).resolve(partName(partNumber));
 
     MessageDigest md5 = md5();
     long written = 0;

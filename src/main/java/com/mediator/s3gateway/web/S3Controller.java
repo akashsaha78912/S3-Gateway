@@ -54,9 +54,9 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mediator.s3gateway.exception.S3Exception;
 import com.mediator.s3gateway.integration.ManagerRegistrationClient;
-import com.mediator.s3gateway.integration.ManagerRegistrationClient.HeadObjectResponse;
-import com.mediator.s3gateway.integration.ManagerRegistrationClient.InstanceResponse;
 import com.mediator.s3gateway.integration.RequestRegistry;
+import com.mediator.s3gateway.repository.MediatorCategoryRepository;
+import com.mediator.s3gateway.repository.MediatorObjectRepository;
 import com.mediator.s3gateway.storage.MultipartUploadStore;
 import com.mediator.s3gateway.storage.NearlineStore;
 import com.mediator.s3gateway.storage.ObjectMetadataStore;
@@ -84,24 +84,32 @@ public class S3Controller {
     private final MultipartUploadStore multipart;
     private final ManagerRegistrationClient managerClient;
     private final ObjectMapper objectMapper;
+    private final MediatorObjectRepository mediatorObjects;
+    private final MediatorCategoryRepository mediatorCategories;
 
     /**
      * Spring injects the controller's storage collaborators through this
      * constructor.
      */
-    public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata, MultipartUploadStore multipart, ManagerRegistrationClient managerClient, ObjectMapper objectMapper) {
+    public S3Controller(NearlineStore store, RequestRegistry requests, ObjectMetadataStore metadata, MultipartUploadStore multipart, ManagerRegistrationClient managerClient, ObjectMapper objectMapper, MediatorObjectRepository mediatorObjects, MediatorCategoryRepository mediatorCategories) {
         this.store = store;
         this.requests = requests;
         this.metadata = metadata;
         this.multipart = multipart;
         this.managerClient = managerClient;
         this.objectMapper = objectMapper;
+        this.mediatorObjects = mediatorObjects;
+        this.mediatorCategories = mediatorCategories;
     }
 
-    // @GetMapping("/health")
-    // public ResponseEntity<String> health() {
-    //     return ResponseEntity.ok("OK");
-    // }
+    @GetMapping("/health")
+    public ResponseEntity<String> health() {
+        System.out.println(
+                "health check triggered"
+        );
+        return ResponseEntity.ok("OK");
+    }
+
     /**
      * Handles S3 ListBuckets: {@code GET /}.
      *
@@ -117,7 +125,8 @@ public class S3Controller {
         // for (String b : store.buckets()) {
         //     x.append("<Bucket><Name>").append(xml(b)).append("</Name></Bucket>");
         // }
-        for (String b : store.buckets()) {
+        // for (String b : store.buckets()) {
+        for (String b : mediatorCategories.findAll()) {
             x.append("<Bucket>")
                     .append("<Name>")
                     .append(xml(b))
@@ -206,7 +215,7 @@ public class S3Controller {
     public String list(@PathVariable String bucket,
             @RequestParam(required = false) String prefix,
             @RequestParam(required = false) String delimiter,
-            @RequestParam(defaultValue = "1000", name = "max-keys") int maxKeys,
+            @RequestParam(defaultValue = "100", name = "max-keys") int maxKeys,
             @RequestParam(required = false, name = "start-after") String after,
             @RequestParam(required = false, name = "continuation-token") String token,
             @RequestParam(required = false, name = "encoding-type") String encodingType,
@@ -217,34 +226,93 @@ public class S3Controller {
                 bucket, prefix, delimiter, maxKeys, after, token);
 
         // Resolve the bucket first so an unknown bucket returns NoSuchBucket.
-        store.category(bucket);
+        // store.category(bucket);
+        // String pfx = prefix == null ? "" : prefix;
+        // List<NearlineStore.Entry> all = store.list(bucket, prefix)//this will check the directory applies the key
+        //         .stream()
+        //         .filter(v -> after == null || v.key().compareTo(after) > 0)
+        //         .toList();
+        // // This implementation's continuation token is a Base64-encoded list index.
+        // int start = token == null ? 0 : Integer.parseInt(new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8));
+        // int limit = Math.max(1, Math.min(maxKeys, 1000));
+        // Set<String> commonPrefixes = new TreeSet<>();
+        // List<NearlineStore.Entry> filteredItems = new java.util.ArrayList<>();
+        // // Group entries into CommonPrefixes if delimiter is present
+        // for (var e : all) {
+        //     String relativeKey = e.key().startsWith(pfx) ? e.key().substring(pfx.length()) : e.key();
+        //     if (delimiter != null && !delimiter.isEmpty() && relativeKey.contains(delimiter)) {
+        //         String subPrefix = pfx + relativeKey.substring(0, relativeKey.indexOf(delimiter) + delimiter.length());
+        //         commonPrefixes.add(subPrefix);
+        //     } else {
+        //         filteredItems.add(e);
+        //     }
+        // }
+        // List<NearlineStore.Entry> items = filteredItems.subList(Math.min(start, filteredItems.size()), Math.min(start + limit, filteredItems.size()));
+        // boolean truncated = start + items.size() < filteredItems.size();
         String pfx = prefix == null ? "" : prefix;
-        List<NearlineStore.Entry> all = store.list(bucket, prefix)//this will check the directory applies the key
-                .stream()
-                .filter(v -> after == null || v.key().compareTo(after) > 0)
-                .toList();
 
-        // This implementation's continuation token is a Base64-encoded list index.
-        int start = token == null ? 0 : Integer.parseInt(new String(Base64.getUrlDecoder().decode(token), StandardCharsets.UTF_8));
-        int limit = Math.max(1, Math.min(maxKeys, 1000));
+// This gateway intentionally limits every ListObjectsV2 page to 100.
+        int limit = Math.max(0, Math.min(maxKeys, 100));
 
+        String cursor = token != null && !token.isBlank()
+                ? decodeContinuationToken(token)
+                : after;
+        System.out.println("Decoded continuation token: " + cursor);
+// Request one extra row to determine IsTruncated.
+        List<MediatorObjectRepository.ListedObject> fetched;
+
+        if (limit == 0) {
+            fetched = List.of();
+        } else {
+            fetched = mediatorObjects.listPage(
+                    bucket,
+                    pfx,
+                    cursor,
+                    limit + 1
+            );
+        }
+
+        boolean truncated = fetched.size() > limit;
+
+        List<MediatorObjectRepository.ListedObject> page = truncated
+                ? fetched.subList(0, limit)
+                : fetched;
+
+// Apply delimiter grouping to this bounded database page.
         Set<String> commonPrefixes = new TreeSet<>();
-        List<NearlineStore.Entry> filteredItems = new java.util.ArrayList<>();
+        List<MediatorObjectRepository.ListedObject> items
+                = new java.util.ArrayList<>();
 
-        // Group entries into CommonPrefixes if delimiter is present
-        for (var e : all) {
-            String relativeKey = e.key().startsWith(pfx) ? e.key().substring(pfx.length()) : e.key();
-            if (delimiter != null && !delimiter.isEmpty() && relativeKey.contains(delimiter)) {
-                String subPrefix = pfx + relativeKey.substring(0, relativeKey.indexOf(delimiter) + delimiter.length());
-                commonPrefixes.add(subPrefix);
+        for (MediatorObjectRepository.ListedObject object : page) {
+            String key = object.key();
+
+            String relativeKey = key.startsWith(pfx)
+                    ? key.substring(pfx.length())
+                    : key;
+
+            if (delimiter != null
+                    && !delimiter.isEmpty()
+                    && relativeKey.contains(delimiter)) {
+
+                String commonPrefix = pfx
+                        + relativeKey.substring(
+                                0,
+                                relativeKey.indexOf(delimiter)
+                                + delimiter.length()
+                        );
+
+                commonPrefixes.add(commonPrefix);
             } else {
-                filteredItems.add(e);
+                items.add(object);
             }
         }
 
-        List<NearlineStore.Entry> items = filteredItems.subList(Math.min(start, filteredItems.size()), Math.min(start + limit, filteredItems.size()));
-        boolean truncated = start + items.size() < filteredItems.size();
+        String nextToken = truncated && !page.isEmpty()
+                ? encodeContinuationToken(page.get(page.size() - 1).key())
+                : null;
+
         boolean urlEncodeKeys = "url".equalsIgnoreCase(encodingType);
+        //       boolean urlEncodeKeys = "url".equalsIgnoreCase(encodingType);
 
         String responsePrefix = urlEncodeKeys
                 ? encodeS3Key(prefix)
@@ -273,30 +341,54 @@ public class S3Controller {
                 .append("</IsTruncated>");
 
 // Add each object to the XML response.
-        for (var e : items) {
-            ObjectMetadataStore.Metadata m = metadata.get(bucket, e.key());
-
-            String etag = m.etag() == null || m.etag().isBlank()
-                    ? "\"\""
-                    : "\"" + m.etag() + "\"";
-
+        // for (var e : items) {
+        //     ObjectMetadataStore.Metadata m = metadata.get(bucket, e.key());
+        //     String etag = m.etag() == null || m.etag().isBlank()
+        //             ? "\"\""
+        //             : "\"" + m.etag() + "\"";
+        //     String responseKey = urlEncodeKeys
+        //             ? encodeS3Key(e.key())
+        //             : e.key();
+        //     x.append("<Contents><Key>")
+        //             .append(xml(responseKey))
+        //             .append("</Key><LastModified>")
+        //             .append(time(e.lastModified()))
+        //             .append("</LastModified><ETag>")
+        //             .append(etag)
+        //             .append("</ETag><Size>")
+        //             .append(e.length())
+        //             .append("</Size><StorageClass>")
+        //             .append(m.storageClass())
+        //             .append("</StorageClass></Contents>");
+        // }
+        for (MediatorObjectRepository.ListedObject object : items) {
             String responseKey = urlEncodeKeys
-                    ? encodeS3Key(e.key())
-                    : e.key();
+                    ? encodeS3Key(object.key())
+                    : object.key();
+
+            String etag = object.checksum() == null
+                    || object.checksum().isBlank()
+                    ? "\"\""
+                    : "\"" + object.checksum() + "\"";
+
+            String lastModified = object.lastModified() == null
+                    ? ""
+                    : DateTimeFormatter.ISO_INSTANT.format(
+                            object.lastModified().toInstant()
+                    );
 
             x.append("<Contents><Key>")
                     .append(xml(responseKey))
                     .append("</Key><LastModified>")
-                    .append(time(e.lastModified()))
+                    .append(lastModified)
                     .append("</LastModified><ETag>")
-                    .append(etag)
+                    .append(xml(etag))
                     .append("</ETag><Size>")
-                    .append(e.length())
+                    .append(object.size())
                     .append("</Size><StorageClass>")
-                    .append(m.storageClass())
+                    .append(xml(object.storageClass()))
                     .append("</StorageClass></Contents>");
         }
-
 // Add folder-like prefixes to the XML response.
         for (String cp : commonPrefixes) {
             String responseCommonPrefix = urlEncodeKeys
@@ -308,10 +400,41 @@ public class S3Controller {
                     .append("</Prefix></CommonPrefixes>");
         }
 
-        if (truncated) {
-            x.append("<NextContinuationToken>").append(Base64.getUrlEncoder().encodeToString(Integer.toString(start + items.size()).getBytes(StandardCharsets.UTF_8))).append("</NextContinuationToken>");
+        // if (truncated) {
+        //     x.append("<NextContinuationToken>").append(Base64.getUrlEncoder().encodeToString(Integer.toString(start + items.size()).getBytes(StandardCharsets.UTF_8))).append("</NextContinuationToken>");
+        // }
+        if (nextToken != null) {
+            x.append("<NextContinuationToken>")
+                    .append(xml(nextToken))
+                    .append("</NextContinuationToken>");
         }
         return x.append("</ListBucketResult>").toString();
+    }
+
+    private static String encodeContinuationToken(String key) {
+        return Base64.getUrlEncoder()
+                .withoutPadding()
+                .encodeToString(key.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String decodeContinuationToken(String token) {
+        if (token == null || token.isBlank()) {
+            return null;
+        }
+
+        try {
+            return new String(
+                    Base64.getUrlDecoder().decode(token),
+                    StandardCharsets.UTF_8
+            );
+        } catch (IllegalArgumentException ex) {
+            throw new S3Exception(
+                    400,
+                    "InvalidArgument",
+                    "The continuation token provided is incorrect",
+                    token
+            );
+        }
     }
 
     /**
@@ -348,15 +471,15 @@ public class S3Controller {
          */
         if (actual.isBlank()) {
             log.info("Executing HeadBucket - Bucket: {}", bucket);
-
-            if (!store.bucketExists(bucket)) {
-                throw new S3Exception(
-                        404,
-                        "NoSuchBucket",
-                        "The specified bucket does not exist",
-                        bucket
-                );
-            }
+// we need to always send Ok to head bucket request
+            // if (!store.bucketExists(bucket)) {
+            //     throw new S3Exception(
+            //             404,
+            //             "NoSuchBucket",
+            //             "The specified bucket does not exist",
+            //             bucket
+            //     );
+            // }
 
             return ResponseEntity.ok().build();
         }
@@ -373,27 +496,31 @@ public class S3Controller {
 
         // Path p = store.existing(bucket, actual);
         // return headers(p, metadata.get(bucket, actual)).build();
-        HeadObjectResponse managerResponse = managerClient.headObject(actual, bucket);
-        String media = managerResponse.instances().stream()
-                .findFirst()
-                .map(InstanceResponse::media)
-                .orElse(null);
+        //  HeadObjectResponse managerResponse = managerClient.headObject(actual, bucket);
+        MediatorObjectRepository.DatabaseObject managerResponse
+                = mediatorObjects.find(bucket, actual)
+                        .orElseThrow(() -> new S3Exception(
+                        404,
+                        "NoSuchKey",
+                        "The specified object does not exist",
+                        actual
+                ));
+
         log.info(
                 "Manager HeadObject response - objectName: {}, category: {}, response: {}",
                 actual,
                 bucket,
-                media,
                 managerResponse
         );
-        if (managerResponse == null || managerResponse.status() != 1000) {
-            throw new S3Exception(
-                    404,
-                    "NoSuchKey",
-                    "The specified object does not exist",
-                    actual
-            );
-        }
-
+        // if (managerResponse == null || managerResponse.status() != 1000) {
+        //     throw new S3Exception(
+        //             404,
+        //             "NoSuchKey",
+        //             "The specified object does not exist",
+        //             actual
+        //     );
+        // }
+        String storageClass = normalizeStorageClass(managerResponse.storageClass());
         HttpHeaders headers = new HttpHeaders();
         headers.setContentLength(managerResponse.contentLength());
         headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
@@ -421,7 +548,15 @@ public class S3Controller {
                 "x-amz-meta-category",
                 managerResponse.category()
         );
-        headers.set("status", String.valueOf(managerResponse.status()));
+        headers.set("status", "1000");
+        headers.set("x-amz-storage-class", storageClass);
+        if ("DEEP_ARCHIVE".equals(storageClass)
+                && managerResponse.restoreOngoing()) {
+            headers.set(
+                    "x-amz-restore",
+                    "ongoing-request=\"true\""
+            );
+        }
         if (managerResponse.comments() != null
                 && !managerResponse.comments().isBlank()) {
             try {
@@ -444,14 +579,23 @@ public class S3Controller {
                     }
                 });
             } catch (JsonProcessingException e) {
-                throw new IllegalStateException(
-                        "Manager returned invalid am_objectComments JSON: "
-                        + managerResponse.comments(),
-                        e
+                log.warn(
+                        "Ignoring legacy/non-JSON am_objectComments - bucket={}, key={}, comments={}",
+                        bucket,
+                        actual,
+                        managerResponse.comments()
                 );
             }
         }
         return new ResponseEntity<>(headers, HttpStatus.OK);
+    }
+    //Helper function to normalize Storage Class
+
+    private static String normalizeStorageClass(String value) {
+        if (value == null || value.isBlank()) {
+            return "STANDARD";
+        }
+        return value.trim().toUpperCase(Locale.ROOT);
     }
 
     /**
@@ -469,7 +613,34 @@ public class S3Controller {
         logRequest(request);
         String actual = clean(key);
         log.info("Executing GetObject - Bucket: {}, Key: {}, Range Header: {}", bucket, actual, range);
-        int reqID = requests.submit("RESTORE", bucket, actual, request.getContentLength(), Map.of(), Map.of());
+        // HeadObjectResponse object=managerClient.headObject(actual, bucket);
+        // if(object == null || object.status()!=1000){
+        //     throw new S3Exception(404, "NoSuchKey", "The specified object does not exist", actual);
+        // }
+        // String storageClass =normalizeStorageClass(object.storageClass());
+        // if(!"STANDARD".equals(storageClass)){
+        //     throw new S3Exception(403, "InvalidObjectState", "The operation is not valid for the object's storage class", actual);
+        // }
+        MediatorObjectRepository.DatabaseObject object
+                = mediatorObjects.find(bucket, actual)
+                        .orElseThrow(() -> new S3Exception(
+                        404,
+                        "NoSuchKey",
+                        "The specified object does not exist",
+                        actual
+                ));
+        System.out.println(object);
+        String storageClass = object.storageClass();
+
+        if (!"STANDARD".equals(storageClass)) {
+            throw new S3Exception(
+                    403,
+                    "InvalidObjectState",
+                    "The operation is not valid for the object's storage class",
+                    actual
+            );
+        }
+        int reqID = requests.submit("RESTORE", bucket, actual, object.contentLength(), Map.of(), Map.of());
         System.out.println("Request ID: " + reqID);
         reportProgressSafely(
                 reqID,
@@ -505,8 +676,8 @@ public class S3Controller {
                 : Files.getLastModifiedTime(p).toMillis();
         h.setLastModified(lastModified);
         h.set(HttpHeaders.ACCEPT_RANGES, "bytes");
-        h.set("x-amz-storage-class", m.storageClass());
-        h.set("x-amz-restore", restoreHeader(m));
+        h.set("x-amz-storage-class", storageClass);
+        //  h.set("x-amz-restore", restoreHeader(m));
         if (status == HttpStatus.PARTIAL_CONTENT) {
             h.set(HttpHeaders.CONTENT_RANGE, "bytes " + start + "-" + end + "/" + size);
         }
@@ -879,7 +1050,6 @@ public class S3Controller {
             HttpServletRequest request) throws IOException, InterruptedException, ExecutionException {
         logRequest(request);
         String actual = clean(key);
-// S3 clients such as Cyberduck create folders by uploading a zero-byte
 // object whose key ends with "/". Represent it as an NLD directory.
         if (actual.endsWith("/") && request.getContentLengthLong() == 0) {
             store.createDirectory(bucket, actual);
@@ -1056,17 +1226,48 @@ public class S3Controller {
         logRequest(request);
         String actual = clean(key);
         log.info("Executing RestoreObject - Bucket: {}, Key: {}, Restore Body: {}", bucket, actual, restoreRequest);
-
-        // Fail with NoSuchKey before changing metadata or submitting work.
-        store.existing(bucket, actual);
-        ObjectMetadataStore.Metadata m = metadata.get(bucket, actual);
-        if (!"STANDARD".equals(m.storageClass())) {
-            metadata.restored(bucket, actual, restoreDays(restoreRequest));
+        MediatorObjectRepository.DatabaseObject object
+                = mediatorObjects.find(bucket, actual)
+                        .orElseThrow(() -> new S3Exception(
+                        404,
+                        "NoSuchKey",
+                        "The specified object does not exist",
+                        actual
+                ));
+        String storageClass = normalizeStorageClass(object.storageClass());
+        if ("STANDARD".equals(storageClass)) {
+            throw new S3Exception(403, "InvalidObjectState", "Restore is not allowed for the object's current storage class", actual);
         }
+        if (!Set.of("DEEP_ARCHIVE").contains(storageClass)) {
+            throw new S3Exception(403, "InvalidObjectState", "The operation is not valid for the object's storage class", actual);
+        }
+        if (object.restoreOngoing()) {
+            throw new S3Exception(409, "RestoreAlreadyInProgress", "Object restore is already in progress", actual);
+        }
+        int reqID = requests.submit("COPY", bucket, actual, object.contentLength(), Map.of(), Map.of());
+        if (reqID <= 0) {
+            throw new IllegalStateException(
+                    "Manager returned an invalid restore request ID"
+            );
+        }
+        log.info(
+                "Manager accepted restore COPY - bucket={} , key={} , reqID={}",
+                bucket,
+                actual,
+                reqID
+        );
+
+        return ResponseEntity.accepted().build();
+        // Fail with NoSuchKey before changing metadata or submitting work.
+        // store.existing(bucket, actual);
+        // ObjectMetadataStore.Metadata m = metadata.get(bucket, actual);
+        // if (!"STANDARD".equals(m.storageClass())) {
+        //   metadata.restored(bucket, actual, restoreDays(restoreRequest));
+        // }
         // requests.submit("RESTORE", bucket, actual);
         // int reqID = requests.submit("RESTORE", bucket, actual, request.getContentLength(), Map.of(), Map.of());
 
-        return ResponseEntity.accepted().header("x-amz-restore", restoreHeader(metadata.get(bucket, actual))).build();
+        //return ResponseEntity.accepted().header("x-amz-restore", restoreHeader(metadata.get(bucket, actual))).build();
     }
 
     /**
@@ -1139,15 +1340,6 @@ public class S3Controller {
             HttpServletRequest request) throws IOException {
 
         logRequest(request);
-        // String actual = clean(key);
-        // String partEtag = multipart.putPart(
-        //         uploadId,
-        //         bucket,
-        //         actual,
-        //         partNumber,
-        //         request.getInputStream(),
-        //         request.getContentLengthLong()
-        // );
         String actual = clean(key);
 
         InputStream inputStream = request.getInputStream();
@@ -1188,14 +1380,6 @@ public class S3Controller {
             inputStream = new AwsChunkedInputStream(inputStream);
         }
 
-        // String partEtag = multipart.putPart(
-        //         uploadId,
-        //         bucket,
-        //         actual,
-        //         partNumber,
-        //         inputStream,
-        //         expectedLength
-        // );
         String partEtag = multipart.putPart(
                 uploadId,
                 bucket,
@@ -1226,36 +1410,66 @@ public class S3Controller {
 
         List<MultipartUploadStore.CompletedPart> requestedParts
                 = parseCompletedParts(completeXml);
-        MultipartUploadStore.CompletedMultipart completed = multipart.complete(uploadId, bucket, actual, requestedParts);
+        MultipartUploadStore.CompletedMultipart completed
+                = multipart.complete(uploadId, bucket, actual, requestedParts);
 
-        NearlineStore.Stored stored;
-        try (InputStream in = Files.newInputStream(completed.assembledFile())) {
-            stored = store.put(bucket, actual, in, completed.length());
-        }
-
-        ObjectMetadataStore.ObjectHeaders objectHeaders = new ObjectMetadataStore.ObjectHeaders(
-                "application/octet-stream",
-                null,
-                null,
-                null,
-                null,
-                null,
+        int reqID = requests.submit(
+                "ARCHIVE",
+                bucket,
+                actual,
+                completed.length(),
+                Map.of(),
                 Map.of()
         );
 
-        // metadata.put(bucket, actual, completed.storageClass(), objectHeaders, stored.length(), stored.etag(), stored.lastModified());
-        // requests.submit("ARCHIVE", bucket, actual);
-        // multipart.cleanup(uploadId);
-        // String body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
-        //         + "<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
-        //         + "<Bucket>" + xml(bucket) + "</Bucket>"
-        //         + "<Key>" + xml(actual) + "</Key>"
-        //         + "<ETag>\"" + xml(stored.etag()) + "\"</ETag>"
-        //         + "</CompleteMultipartUploadResult>";
-        // return ResponseEntity.ok()
-        //         .contentType(MediaType.APPLICATION_XML)
-        //         .eTag("\"" + stored.etag() + "\"")
-        //         .body(body);
+        NearlineStore.Stored stored;
+
+        try (InputStream in = Files.newInputStream(completed.assembledFile())) {
+            stored = store.put(
+                    bucket,
+                    actual,
+                    in,
+                    completed.length(),
+                    Map.of(),
+                    null,
+                    null,
+                    percent -> {
+                        if (percent < 100) {
+                            reportProgressSafely(
+                                    reqID,
+                                    12,
+                                    percent,
+                                    "",
+                                    ""
+                            );
+                        }
+                    }
+            );
+        } catch (IOException | RuntimeException error) {
+            reportProgressSafely(
+                    reqID,
+                    4,
+                    0,
+                    error.getMessage() == null
+                    ? "Multipart upload failed"
+                    : error.getMessage(),
+                    ""
+            );
+
+            throw error;
+        }
+
+        ObjectMetadataStore.ObjectHeaders objectHeaders
+                = new ObjectMetadataStore.ObjectHeaders(
+                        "application/octet-stream",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        Map.of()
+                );
+
         metadata.put(
                 bucket,
                 actual,
@@ -1266,7 +1480,14 @@ public class S3Controller {
                 stored.lastModified()
         );
 
-        //  requests.submit("ARCHIVE", bucket, actual);
+        reportProgressSafely(
+                reqID,
+                3,
+                100,
+                "",
+                completed.etag()
+        );
+
         multipart.cleanup(uploadId);
 
         String body
@@ -1296,36 +1517,52 @@ public class S3Controller {
         multipart.abort(uploadId, bucket, clean(key));
         return ResponseEntity.noContent().build();
     }
-//Comment Updated controller first call head object to get that object then update the comment field using s3 compatible api
 
+    //Comment Updated controller first call head object to get that object then update the comment field using s3 compatible api
     @PutMapping(value = "/{bucket}/{*key}", params = "tagging")
     public ResponseEntity<Void> putObjectTagging(
             @PathVariable String bucket,
             @PathVariable String key,
             HttpServletRequest request
-    ) throws IOException, Exception {
+    ) throws Exception {
+
         logRequest(request);
+
         String actual = clean(key);
+        Map<String, String> tags
+                = parseTaggingXml(request.getInputStream());
 
-        ManagerRegistrationClient.HeadObjectResponse managerResponse = managerClient.headObject(actual, bucket);
-        System.out.println(managerResponse);
-
-        if (managerResponse == null || managerResponse.status() != 1000) {
-            throw new S3Exception(404, "NoSuchKey", "The specific object does not exist", actual);
-
-        }
-
-        Map<String, String> tags = parseTaggingXml(request.getInputStream());
-        ManagerRegistrationClient.S3Attributes current;
-        if (managerResponse.comments() == null || managerResponse.comments().isBlank()) {
-            current = new ManagerRegistrationClient.S3Attributes(1, Map.of(), Map.of());
-        } else {
-            current = objectMapper.readValue(managerResponse.comments(), ManagerRegistrationClient.S3Attributes.class);
-        }
         String comments = objectMapper.writeValueAsString(
-                new ManagerRegistrationClient.S3Attributes(1, current.userMetadata(), tags)
+                new ManagerRegistrationClient.S3Attributes(
+                        1,
+                        Map.of(),
+                        tags
+                )
         );
-        managerClient.setComment(managerResponse.objectName(), managerResponse.category(), comments);
+        if (comments.getBytes(StandardCharsets.UTF_8).length > 4096) {
+            throw new S3Exception(
+                    400,
+                    "MetadataTooLarge",
+                    "Object tags exceed the comments limit",
+                    actual
+            );
+        }
+
+        int updatedRows = mediatorObjects.updateComments(
+                bucket,
+                actual,
+                comments
+        );
+
+        if (updatedRows == 0) {
+            throw new S3Exception(
+                    404,
+                    "NoSuchKey",
+                    "The specified object does not exist",
+                    actual
+            );
+        }
+
         return ResponseEntity.ok().build();
     }
 
@@ -1393,6 +1630,73 @@ public class S3Controller {
 
         return Map.copyOf(tags);
     }
+//controller for getObject tagging to get the tags for a specific object using s3 compatible api
+
+    @GetMapping(
+            value = "/{bucket}/{*key}",
+            params = "tagging",
+            produces = MediaType.APPLICATION_XML_VALUE
+    )
+    public ResponseEntity<String> getObjectTagging(
+            @PathVariable String bucket,
+            @PathVariable String key,
+            HttpServletRequest request
+    ) throws IOException {
+
+        logRequest(request);
+        String actual = clean(key);
+
+        MediatorObjectRepository.DatabaseObject object
+                = mediatorObjects.find(bucket, actual)
+                        .orElseThrow(() -> new S3Exception(
+                        404,
+                        "NoSuchKey",
+                        "The specified object does not exist",
+                        actual
+                ));
+
+        Map<String, String> tags = Map.of();
+        log.info("Retrieved comments for object {}: {}", object.objectId(), object.comments());
+        if (object.comments() != null && !object.comments().isBlank()) {
+            try {
+                ManagerRegistrationClient.S3Attributes attributes
+                        = objectMapper.readValue(
+                                object.comments(),
+                                ManagerRegistrationClient.S3Attributes.class
+                        );
+
+                tags = attributes.tags() == null
+                        ? Map.of()
+                        : attributes.tags();
+            } catch (JsonProcessingException exception) {
+                log.warn(
+                        "Ignoring legacy/non-JSON comments for tagging: bucket={}, key={}",
+                        bucket,
+                        actual
+                );
+            }
+        }
+
+        StringBuilder xml = new StringBuilder(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                + "<Tagging xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
+                + "<TagSet>"
+        );
+
+        tags.forEach((tagKey, tagValue) -> xml
+                .append("<Tag><Key>")
+                .append(xml(tagKey))
+                .append("</Key><Value>")
+                .append(xml(tagValue))
+                .append("</Value></Tag>")
+        );
+
+        xml.append("</TagSet></Tagging>");
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_XML)
+                .body(xml.toString());
+    }
 
     private static String childText(Element parent, String name) {
         NodeList nodes = parent.getElementsByTagNameNS("*", name);
@@ -1401,55 +1705,6 @@ public class S3Controller {
                 : nodes.item(0).getTextContent();
     }
 
-    // private static List<Integer> parseCompletedPartNumbers(String body) {
-    //     java.util.regex.Matcher matcher = java.util.regex.Pattern
-    //             .compile("<PartNumber>\\s*(\\d+)\\s*</PartNumber>")
-    //             .matcher(body == null ? "" : body);
-    //     List<Integer> parts = new java.util.ArrayList<>();
-    //     while (matcher.find()) {
-    //         parts.add(Integer.parseInt(matcher.group(1)));
-    //     }
-    //     return parts;
-    // }
-    // private static List<MultipartUploadStore.CompletedPart>
-    //         parseCompletedParts(String body) {
-    //     String xmlBody = body == null ? "" : body;
-    //     java.util.regex.Pattern partPattern =
-    //             java.util.regex.Pattern.compile(
-    //                     "<Part>\\s*"
-    //                     + "<PartNumber>\\s*(\\d+)\\s*</PartNumber>\\s*"
-    //                     + "<ETag>\\s*(.*?)\\s*</ETag>\\s*"
-    //                     + "</Part>",
-    //                     java.util.regex.Pattern.CASE_INSENSITIVE
-    //                     | java.util.regex.Pattern.DOTALL
-    //             );
-    //     java.util.regex.Matcher matcher =
-    //             partPattern.matcher(xmlBody);
-    //     List<MultipartUploadStore.CompletedPart> parts =
-    //             new java.util.ArrayList<>();
-    //     while (matcher.find()) {
-    //         int partNumber =
-    //                 Integer.parseInt(matcher.group(1));
-    //         String etag = matcher.group(2)
-    //                 .replace("&quot;", "\"")
-    //                 .trim();
-    //         parts.add(
-    //                 new MultipartUploadStore.CompletedPart(
-    //                         partNumber,
-    //                         etag
-    //                 )
-    //         );
-    //     }
-    //     if (parts.isEmpty()) {
-    //         throw new S3Exception(
-    //                 400,
-    //                 "MalformedXML",
-    //                 "CompleteMultipartUpload must contain PartNumber and ETag values",
-    //                 ""
-    //         );
-    //     }
-    //     return parts;
-    // }
     private static List<MultipartUploadStore.CompletedPart>
             parseCompletedParts(String body) {
 

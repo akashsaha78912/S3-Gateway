@@ -197,24 +197,21 @@ public class ManagerRegistrationClient {
             int status,
             @JsonProperty("am_objectComments")
             String comments,
-            @JsonProperty("instances")
-            List<InstanceResponse> instances
+            @JsonProperty("am_storageClass")
+            String storageClass
             ) {
 
         public long contentLength() {
             return Long.parseLong(objectSizeBytes);
         }
     }
-    public record InstanceResponse(
-        @JsonProperty("media")
-        String media
-    ){}
+
 
     public record RegisterResponse(
             @JsonProperty("reqID")
-            int reqID,
+            Integer reqID,
             @JsonProperty("status")
-            int status
+            Integer status
             ) {
 
     }

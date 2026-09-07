@@ -62,7 +62,7 @@ public class NearlineStore {
     public String category(String bucket) {
         validateBucket(bucket);
         String category = properties.getBuckets().getOrDefault(bucket, bucket);
-        //  String category = properties.getBuckets().get(bucket);
+        // //  String category = properties.getBuckets().get(bucket);
 
         //     if (category == null) {
         //         category = dynamicCategory(bucket);

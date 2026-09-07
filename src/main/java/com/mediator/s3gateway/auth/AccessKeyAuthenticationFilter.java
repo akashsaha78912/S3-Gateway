@@ -51,7 +51,7 @@ public class AccessKeyAuthenticationFilter
         /*
          * Internal user-management endpoints use the separate admin key.s
          */
-        return request.getRequestURI().startsWith("/internal/users");
+        return request.getRequestURI().equals("/health") || request.getRequestURI().startsWith("/internal/users");
     }
 
     @Override

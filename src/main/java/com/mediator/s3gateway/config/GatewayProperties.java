@@ -19,7 +19,31 @@ public class GatewayProperties {
     private Manager manager = new Manager();
     private Head head = new Head();
     private Progress progress = new Progress();
-    private UpdateComment updateComment= new UpdateComment();
+    private UpdateComment updateComment = new UpdateComment();
+
+    public enum GatewayRole {
+        MANAGER,
+        MOVER
+    }
+    private boolean enabled = true;
+    private GatewayRole role = GatewayRole.MOVER;
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public GatewayRole getRole() {
+        return role;
+    }
+
+    public void setRole(GatewayRole role) {
+        this.role = role;
+    }
+
     public Manager getManager() {
         return manager;
     }
@@ -35,16 +59,20 @@ public class GatewayProperties {
     public void setHead(Head head) {
         this.head = head;
     }
+
     public Progress getProgress() {
         return progress;
     }
+
     public void setProgress(Progress progress) {
         this.progress = progress;
     }
-    public void setComment(UpdateComment updateComment){
-        this.updateComment=updateComment;
+
+    public void setComment(UpdateComment updateComment) {
+        this.updateComment = updateComment;
     }
-    public UpdateComment getComment(){
+
+    public UpdateComment getComment() {
         return updateComment;
     }
 
@@ -119,14 +147,17 @@ public class GatewayProperties {
         }
 
     }
-    public static class UpdateComment{
+
+    public static class UpdateComment {
+
         public String url;
 
-        public String getUrl(){
+        public String getUrl() {
             return url;
         }
-        public void setUrl(String url){
-            this.url=url;
+
+        public void setUrl(String url) {
+            this.url = url;
         }
     }
 
@@ -152,7 +183,7 @@ public class GatewayProperties {
         private String moverName = "Mover1";
         private String diskName = "mover1_disk";
         private String options = "";
-        private Map<String,String> comments = new HashMap<>();
+        private Map<String, String> comments = new HashMap<>();
         private String instanceNumber = "-1";
         private String media = "NLD_DISK";
         private int priority = 50;
@@ -213,11 +244,11 @@ public class GatewayProperties {
             this.options = options;
         }
 
-        public Map<String,String> getComments() {
+        public Map<String, String> getComments() {
             return comments == null ? new HashMap<>() : comments;
         }
 
-        public void setComments(Map<String,String> comments) {
+        public void setComments(Map<String, String> comments) {
             this.comments = comments == null ? new HashMap<>() : new HashMap<>(comments);
         }
 

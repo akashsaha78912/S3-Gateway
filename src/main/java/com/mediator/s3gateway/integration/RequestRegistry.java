@@ -44,58 +44,65 @@ public class RequestRegistry {
         this.managerClient = managerClient;
         this.executor = Executors.newFixedThreadPool(properties.getAsync().getWorkers());
     }
-    private static final Logger log
-            = LoggerFactory.getLogger(RequestRegistry.class);
+
+    private static final Logger log = LoggerFactory.getLogger(RequestRegistry.class);
 
     /**
      * Persists a new request, then advances its status asynchronously.
      *
      * @return the UUID assigned to the request record
      */
-    public int submit(String operation, String bucket, String key, long contentLength, Map<String,String> userMetadata,Map<String, String> tags) {
-        String category = store.category(bucket);
+    public int submit(String operation, String category, String key, long contentLength, Map<String, String> userMetadata,
+            Map<String, String> tags) {
+      //  String category = store.category(bucket);
         // String id = UUID.randomUUID().toString();
-        // Path requestFile = properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests").resolve(id + ".properties");
+        // Path requestFile =
+        // properties.getNearlineRoot().toAbsolutePath().resolve(".gateway-requests").resolve(id
+        // + ".properties");
         // write(requestFile, operation, category, key, "ACCEPTED");
         // This background transition is the placeholder for a Manager call.
         // executor.submit(() -> {
-        //     write(requestFile, operation, category, key, "SUBMITTED_TO_MANAGER");
-        //     /* MediatorManager.submit(request) belongs here. */ });
+        // write(requestFile, operation, category, key, "SUBMITTED_TO_MANAGER");
+        // /* MediatorManager.submit(request) belongs here. */ });
 
         // executor.submit(() -> {
-        //     try {
-        //          managerClient.register(operation, category, key, contentLength);
-        //         write(
-        //                 requestFile,
-        //                 operation,
-        //                 category,
-        //                 key,
-        //                 "SUBMITTED_TO_MANAGER"
-        //         );
-        //     } catch (Exception e) {
-        //         log.error(
-        //                 "Manager registration failed: requestId={}, operation={}, category={}, key={}",
-        //                 id,
-        //                 operation,
-        //                 category,
-        //                 key,
-        //                 e
-        //         );
-        //         write(
-        //                 requestFile,
-        //                 operation,
-        //                 category,
-        //                 key,
-        //                 "SUBMISSION_FAILED"
-        //         );
-        //     }
+        // try {
+        // managerClient.register(operation, category, key, contentLength);
+        // write(
+        // requestFile,
+        // operation,
+        // category,
+        // key,
+        // "SUBMITTED_TO_MANAGER"
+        // );
+        // } catch (Exception e) {
+        // log.error(
+        // "Manager registration failed: requestId={}, operation={}, category={},
+        // key={}",
+        // id,
+        // operation,
+        // category,
+        // key,
+        // e
+        // );
+        // write(
+        // requestFile,
+        // operation,
+        // category,
+        // key,
+        // "SUBMISSION_FAILED"
+        // );
+        // }
         // });
-        ManagerRegistrationClient.RegisterResponse response
-                = managerClient.register(operation, category, key, contentLength, userMetadata,tags);
-        if (response == null) {
+        ManagerRegistrationClient.RegisterResponse response = managerClient.register(operation, category, key,
+                contentLength, userMetadata, tags);
+        if (response == null
+                || response.status() == null
+                || response.status() != 1000
+                || response.reqID() == null
+                || response.reqID() <= 0) {
             throw new IllegalStateException(
-                    "Manager registration returned an empty response"
-            );
+                    "Manager registration failed: " + response);
         }
 
         log.info(
@@ -104,15 +111,14 @@ public class RequestRegistry {
                 category,
                 key,
                 response.reqID(),
-                response.status()
-        );
+                response.status());
 
         // write(
-        //         requestFile,
-        //         operation,
-        //         category,
-        //         key,
-        //         "SUBMITTED_TO_MANAGER"
+        // requestFile,
+        // operation,
+        // category,
+        // key,
+        // "SUBMITTED_TO_MANAGER"
         // );
         return response.reqID();
 
@@ -134,7 +140,8 @@ public class RequestRegistry {
                 } catch (IOException e) {
                     return "";
                 }
-            }).filter(v -> v.contains("operation=RESTORE\n") && v.contains("category=" + category + "\n") && v.contains("key=" + key + "\n")).map(v -> value(v, "id")).findFirst();
+            }).filter(v -> v.contains("operation=RESTORE\n") && v.contains("category=" + category + "\n")
+                    && v.contains("key=" + key + "\n")).map(v -> value(v, "id")).findFirst();
         } catch (IOException e) {
             return Optional.empty();
         }
@@ -146,7 +153,11 @@ public class RequestRegistry {
     private void write(Path file, String operation, String category, String key, String status) {
         try {
             Files.createDirectories(file.getParent());
-            Files.writeString(file, "id=" + file.getFileName().toString().replace(".properties", "") + "\noperation=" + operation + "\ncategory=" + category + "\nkey=" + key + "\nstatus=" + status + "\ncreated=" + Instant.now() + "\n", StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            Files.writeString(file,
+                    "id=" + file.getFileName().toString().replace(".properties", "") + "\noperation=" + operation
+                            + "\ncategory=" + category + "\nkey=" + key + "\nstatus=" + status + "\ncreated="
+                            + Instant.now() + "\n",
+                    StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot persist gateway request", e);
         }
