@@ -62,15 +62,16 @@ public class NearlineStore {
     public String category(String bucket) {
         validateBucket(bucket);
         String category = properties.getBuckets().getOrDefault(bucket, bucket);
-        // //  String category = properties.getBuckets().get(bucket);
+        // // String category = properties.getBuckets().get(bucket);
 
-        //     if (category == null) {
-        //         category = dynamicCategory(bucket);
-        //     }
-        //    Path categoryDir = categoryPath(category);
-        //     if (!Files.exists(categoryDir)) {
-        //         throw new S3Exception(404, "NoSuchBucket", "The specified bucket does not exist", bucket);
-        //     }
+        // if (category == null) {
+        // category = dynamicCategory(bucket);
+        // }
+        // Path categoryDir = categoryPath(category);
+        // if (!Files.exists(categoryDir)) {
+        // throw new S3Exception(404, "NoSuchBucket", "The specified bucket does not
+        // exist", bucket);
+        // }
         return category;
     }
 
@@ -87,7 +88,8 @@ public class NearlineStore {
                         .map(p -> p.getFileName().toString())
                         .filter(name -> !name.startsWith("."))
                         .forEach(category -> {
-                            // Reverse lookup in properties, or format directory back to S3 bucket name format
+                            // Reverse lookup in properties, or format directory back to S3 bucket name
+                            // format
                             String matchedBucket = properties.getBuckets().entrySet().stream()
                                     .filter(e -> e.getValue().equalsIgnoreCase(category))
                                     .map(Map.Entry::getKey)
@@ -108,12 +110,14 @@ public class NearlineStore {
      */
     public synchronized String createBucket(String bucket) throws IOException {
         validateBucket(bucket);
-        // String category = properties.getBuckets().getOrDefault(bucket, dynamicCategory(bucket));
+        // String category = properties.getBuckets().getOrDefault(bucket,
+        // dynamicCategory(bucket));
         String category = properties.getBuckets().getOrDefault(bucket, bucket);
         Path directory = categoryPath(category);
 
         if (Files.exists(directory)) {
-            throw new S3Exception(409, "BucketAlreadyOwnedByYou", "Your previous request to create the named bucket succeeded and you already own it", bucket);
+            throw new S3Exception(409, "BucketAlreadyOwnedByYou",
+                    "Your previous request to create the named bucket succeeded and you already own it", bucket);
         }
 
         // Directly create directory on NLD disk if not present
@@ -169,7 +173,7 @@ public class NearlineStore {
      * Converts an unmapped bucket name into its default category form.
      */
     // private String dynamicCategory(String bucket) {
-    //     return bucket.toUpperCase(Locale.ROOT).replace('-', '_').replace('.', '_');
+    // return bucket.toUpperCase(Locale.ROOT).replace('-', '_').replace('.', '_');
     // }
     /**
      * Resolves a category below the NLD root and rejects escaping paths.
@@ -193,13 +197,30 @@ public class NearlineStore {
     /**
      * Resolves an object path and rejects empty keys or path traversal.
      */
+    // public Path object(String bucket, String key) {
+    // if (key == null || key.isBlank()) {
+    // throw new S3Exception(400, "InvalidRequest", "An object key is required",
+    // bucket);
+    // }
+    // Path base = categoryRoot(bucket);
+    // Path result = base.resolve(key).normalize();
+    // if (!result.startsWith(base)) {
+    // throw new S3Exception(400, "InvalidURI", "Object key is invalid", key);
+    // }
+    // return result;
+    // }
     public Path object(String bucket, String key) {
-        if (key == null || key.isBlank()) {
-            throw new S3Exception(400, "InvalidRequest", "An object key is required", bucket);
+        if (key == null || key.isBlank()
+                || key.contains("/") || key.contains("\\")
+                || key.equals(".") || key.equals("..")) {
+            throw new S3Exception(400, "InvalidURI", "Object key is invalid", key);
         }
-        Path base = categoryRoot(bucket);
-        Path result = base.resolve(key).normalize();
-        if (!result.startsWith(base)) {
+
+        String category = category(bucket);
+        Path root = properties.getNearlineRoot().toAbsolutePath().normalize();
+        Path result = root.resolve(category + "." + key + "." + key).normalize();
+
+        if (!result.startsWith(root)) {
             throw new S3Exception(400, "InvalidURI", "Object key is invalid", key);
         }
         return result;
@@ -227,7 +248,8 @@ public class NearlineStore {
     /**
      * Convenience PUT with checksums but no conditional headers.
      */
-    public Stored put(String bucket, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums) throws IOException {
+    public Stored put(String bucket, String key, InputStream input, long expectedLength,
+            Map<String, String> clientChecksums) throws IOException {
         return put(bucket, key, input, expectedLength, clientChecksums, null, null, percent -> {
         });
     }
@@ -235,7 +257,9 @@ public class NearlineStore {
     /**
      * Stores one object with optional checksums and write preconditions.
      */
-    public Stored put(String bucket, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums, String ifMatch, String ifNoneMatch, IntConsumer progressListener) throws IOException {
+    public Stored put(String bucket, String key, InputStream input, long expectedLength,
+            Map<String, String> clientChecksums, String ifMatch, String ifNoneMatch, IntConsumer progressListener)
+            throws IOException {
         validateChecksumHeaders(clientChecksums, key);
 
         Path destination = object(bucket, key);
@@ -243,7 +267,7 @@ public class NearlineStore {
 
         // // Check if missing on NLD disk, then create directory tree
         // if (parentDir != null && !Files.exists(parentDir)) {
-        //     Files.createDirectories(parentDir);
+        // Files.createDirectories(parentDir);
         // }
         Path parentDir = destination.getParent();
 
@@ -257,8 +281,7 @@ public class NearlineStore {
                             409,
                             "InvalidObjectState",
                             "The object-key parent exists as a non-empty file",
-                            key
-                    );
+                            key);
                 }
             }
 
@@ -276,8 +299,10 @@ public class NearlineStore {
     /**
      * Streams to a staging file, verifies the content, then publishes it.
      */
-    private Stored writeObject(Path destination, String key, InputStream input, long expectedLength, Map<String, String> clientChecksums, IntConsumer progressListener) throws IOException {
-        // Path staging = destination.getParent().resolve("." + destination.getFileName() + "." + UUID.randomUUID() + ".uploading");
+    private Stored writeObject(Path destination, String key, InputStream input, long expectedLength,
+            Map<String, String> clientChecksums, IntConsumer progressListener) throws IOException {
+        // Path staging = destination.getParent().resolve("." +
+        // destination.getFileName() + "." + UUID.randomUUID() + ".uploading");
         long written = 0;
         MessageDigest digest = messageDigest("MD5");
         MessageDigest sha1 = clientChecksums.containsKey("x-amz-checksum-sha1") ? messageDigest("SHA-1") : null;
@@ -287,7 +312,8 @@ public class NearlineStore {
         Checksum crc32c = clientChecksums.containsKey("x-amz-checksum-crc32c") ? new CRC32C() : null;
 
         // Calculate all requested checksums during the same pass that saves bytes.
-        try (InputStream in = input; OutputStream out = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {
+        try (InputStream in = input;
+                OutputStream out = Files.newOutputStream(destination, StandardOpenOption.CREATE_NEW)) {
             byte[] buffer = new byte[1024 * 128];
             int n;
             long lastLoggedPercent = -1;
@@ -319,8 +345,7 @@ public class NearlineStore {
                     if (percent / 5 > lastLoggedPercent / 5) {
                         log.info(
                                 "PUT progress: key={}, written={} bytes, total={} bytes, progress={}%",
-                                key, written, expectedLength, percent
-                        );
+                                key, written, expectedLength, percent);
                         if (progressListener != null) {
                             progressListener.accept((int) percent);
                         }
@@ -373,9 +398,10 @@ public class NearlineStore {
                 .forEach(name -> responseChecksums.put(name, Base64.getEncoder().encodeToString(calculated.get(name))));
 
         // try {
-        //     Files.move(destination, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        // Files.move(destination, destination, StandardCopyOption.ATOMIC_MOVE,
+        // StandardCopyOption.REPLACE_EXISTING);
         // } catch (AtomicMoveNotSupportedException e) {
-        //     Files.move(staging, destination, StandardCopyOption.REPLACE_EXISTING);
+        // Files.move(staging, destination, StandardCopyOption.REPLACE_EXISTING);
         // }
         return new Stored(destination, written, hex(md5), Files.getLastModifiedTime(destination), responseChecksums);
     }
@@ -391,7 +417,8 @@ public class NearlineStore {
         try (Stream<Path> paths = Files.walk(root)) {
             return paths.filter(Files::isRegularFile).map(p -> {
                 try {
-                    return new Entry(root.relativize(p).toString().replace(File.separatorChar, '/'), Files.size(p), Files.getLastModifiedTime(p));
+                    return new Entry(root.relativize(p).toString().replace(File.separatorChar, '/'), Files.size(p),
+                            Files.getLastModifiedTime(p));
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);
                 }
@@ -402,10 +429,12 @@ public class NearlineStore {
                     .toList();
         }
     }
-public boolean bucketExists(String bucket) {
-    String category = category(bucket);
-    return Files.isDirectory(categoryPath(category));
-}
+
+    public boolean bucketExists(String bucket) {
+        String category = category(bucket);
+        return Files.isDirectory(categoryPath(category));
+    }
+
     /**
      * Represents an S3 zero-byte folder marker as a physical NLD directory.
      */
@@ -421,8 +450,7 @@ public boolean bucketExists(String bucket) {
                         409,
                         "InvalidObjectState",
                         "The folder path already exists as a non-empty object",
-                        key
-                );
+                        key);
             }
         }
 
@@ -469,8 +497,7 @@ public boolean bucketExists(String bucket) {
                 "x-amz-checksum-crc32c", 4,
                 "x-amz-checksum-sha1", 20,
                 "x-amz-checksum-sha256", 32,
-                "x-amz-checksum-sha512", 64
-        );
+                "x-amz-checksum-sha512", 64);
         checksums.forEach((name, value) -> {
             try {
                 byte[] decoded = Base64.getDecoder().decode(value);
@@ -490,7 +517,8 @@ public boolean bucketExists(String bucket) {
         expected.forEach((name, value) -> {
             byte[] supplied = Base64.getDecoder().decode(value);
             if (!MessageDigest.isEqual(supplied, calculated.get(name))) {
-                throw new S3Exception(400, "BadDigest", "The checksum value specified did not match what was received", key);
+                throw new S3Exception(400, "BadDigest", "The checksum value specified did not match what was received",
+                        key);
             }
         });
     }
@@ -498,15 +526,19 @@ public boolean bucketExists(String bucket) {
     /**
      * Applies PutObject If-Match and If-None-Match conditions.
      */
-    private static void validateWriteConditions(Path destination, String key, String ifMatch, String ifNoneMatch) throws IOException {
+    private static void validateWriteConditions(Path destination, String key, String ifMatch, String ifNoneMatch)
+            throws IOException {
         boolean exists = Files.isRegularFile(destination);
         if (ifMatch != null && !ifMatch.isBlank()) {
             if (!exists) {
                 throw new S3Exception(404, "NoSuchKey", "The specified key does not exist", key);
             }
             String supplied = normalizeEtag(ifMatch);
-            if (!"*".equals(supplied) && !MessageDigest.isEqual(supplied.getBytes(java.nio.charset.StandardCharsets.US_ASCII), fileEtag(destination).getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
-                throw new S3Exception(412, "PreconditionFailed", "At least one of the preconditions you specified did not hold", key);
+            if (!"*".equals(supplied)
+                    && !MessageDigest.isEqual(supplied.getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+                            fileEtag(destination).getBytes(java.nio.charset.StandardCharsets.US_ASCII))) {
+                throw new S3Exception(412, "PreconditionFailed",
+                        "At least one of the preconditions you specified did not hold", key);
             }
         }
         if (ifNoneMatch != null && !ifNoneMatch.isBlank()) {
@@ -514,7 +546,8 @@ public boolean bucketExists(String bucket) {
                 throw new S3Exception(400, "InvalidRequest", "If-None-Match for PutObject must be '*'", key);
             }
             if (exists) {
-                throw new S3Exception(412, "PreconditionFailed", "At least one of the preconditions you specified did not hold", key);
+                throw new S3Exception(412, "PreconditionFailed",
+                        "At least one of the preconditions you specified did not hold", key);
             }
         }
     }
@@ -553,7 +586,7 @@ public boolean bucketExists(String bucket) {
      */
     private static byte[] checksumBytes(Checksum checksum) {
         long value = checksum.getValue();
-        return new byte[]{(byte) (value >>> 24), (byte) (value >>> 16), (byte) (value >>> 8), (byte) value};
+        return new byte[] { (byte) (value >>> 24), (byte) (value >>> 16), (byte) (value >>> 8), (byte) value };
     }
 
     /**

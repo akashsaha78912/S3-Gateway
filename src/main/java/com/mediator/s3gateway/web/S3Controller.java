@@ -1476,7 +1476,7 @@ public class S3Controller {
                 completed.storageClass(),
                 objectHeaders,
                 stored.length(),
-                completed.etag(),
+                stored.etag(),
                 stored.lastModified()
         );
 
@@ -1485,7 +1485,7 @@ public class S3Controller {
                 3,
                 100,
                 "",
-                completed.etag()
+                stored.etag()
         );
 
         multipart.cleanup(uploadId);
@@ -1496,12 +1496,12 @@ public class S3Controller {
                 + "xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">"
                 + "<Bucket>" + xml(bucket) + "</Bucket>"
                 + "<Key>" + xml(actual) + "</Key>"
-                + "<ETag>\"" + xml(completed.etag()) + "\"</ETag>"
+                + "<ETag>\"" + xml(stored.etag()) + "\"</ETag>"
                 + "</CompleteMultipartUploadResult>";
 
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_XML)
-                .eTag("\"" + completed.etag() + "\"")
+                .eTag("\"" + stored.etag() + "\"")
                 .body(body);
     }
 

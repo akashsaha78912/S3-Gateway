@@ -30,7 +30,11 @@ public Optional<DatabaseObject> find(
                 o.am_objectID,
                 o.am_object_name,
                 o.am_object_category,
-                o.am_objectSize,
+                COALESCE((
+                   SELECT SUM(oc.am_objectComponentSize)
+                 FROM am_objectcomponents oc
+                 WHERE oc.am_objectComponentOID = o.am_objectID
+                    ), 0) AS content_length,
                 o.am_ObjectChecksum,
                 o.am_archiveDate,
                 o.am_objectComments,
@@ -117,7 +121,7 @@ public Optional<DatabaseObject> find(
                     rs.getLong("am_objectID"),
                     rs.getString("am_object_name"),
                     rs.getString("am_object_category"),
-                    rs.getLong("am_objectSize"),
+                    rs.getLong("content_length"),
                     rs.getString("am_ObjectChecksum"),
                     rs.getString("am_archiveDate"),
                     rs.getString("am_objectComments"),
@@ -156,7 +160,11 @@ public Optional<DatabaseObject> find(
                 o.am_objectID,
                 o.am_object_name,
                 o.am_object_category,
-                o.am_objectSize,
+                COALESCE((
+            SELECT SUM(oc.am_objectComponentSize)
+              FROM am_objectcomponents oc
+                WHERE oc.am_objectComponentOID = o.am_objectID
+                ), 0) AS content_length,
                 o.am_objectChecksum,
                 o.am_archiveDate,
             CASE
@@ -201,7 +209,7 @@ public Optional<DatabaseObject> find(
                         rs.getLong("am_objectID"),
                         rs.getString("am_object_name"),
                         rs.getString("am_object_category"),
-                        rs.getLong("am_objectSize"),
+                        rs.getLong("content_length"),
                         rs.getString("am_objectChecksum"),
                         rs.getTimestamp("am_archiveDate"),
                         rs.getString("storage_class")
