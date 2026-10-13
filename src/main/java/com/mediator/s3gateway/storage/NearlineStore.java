@@ -306,8 +306,9 @@ public class NearlineStore {
         long written = 0;
         MessageDigest digest = messageDigest("MD5");
         MessageDigest sha1 = clientChecksums.containsKey("x-amz-checksum-sha1") ? messageDigest("SHA-1") : null;
-        MessageDigest sha256 = clientChecksums.containsKey("x-amz-checksum-sha256") ? messageDigest("SHA-256") : null;
-        MessageDigest sha512 = clientChecksums.containsKey("x-amz-checksum-sha512") ? messageDigest("SHA-512") : null;
+      //  MessageDigest sha256 = clientChecksums.containsKey("x-amz-checksum-sha256") ? messageDigest("SHA-256") : null;
+         MessageDigest sha256 = messageDigest("SHA-256"); 
+      MessageDigest sha512 = clientChecksums.containsKey("x-amz-checksum-sha512") ? messageDigest("SHA-512") : null;
         Checksum crc32 = clientChecksums.containsKey("x-amz-checksum-crc32") ? new CRC32() : null;
         Checksum crc32c = clientChecksums.containsKey("x-amz-checksum-crc32c") ? new CRC32C() : null;
 
