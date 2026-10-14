@@ -27,8 +27,7 @@ public class ManagerRegistrationClient {
     public ManagerRegistrationClient(
             RestClient.Builder restClientBuilder,
             GatewayProperties properties,
-            ObjectMapper objectMapper
-    ) {
+            ObjectMapper objectMapper) {
         this.restClient = restClientBuilder.build();
         this.properties = properties;
         this.objectMapper = objectMapper;
@@ -36,8 +35,19 @@ public class ManagerRegistrationClient {
 
     public void setProgress(int reqID, int state, int progress, String remarks, String checksum) {
 
+    setProgress(reqID, state, progress, remarks, checksum, null);
+    }
+
+    public void setProgress( int reqID,  int state, int progress,  String remarks, String checksum, Long objectSizeBytes) {
+
         RegisterProgress body = new RegisterProgress(
-                reqID, state, progress, "Mover1", remarks, checksum);
+                reqID,
+                state,
+                progress,
+                 properties.getManager().getMoverName(),
+                remarks,
+                checksum,
+                objectSizeBytes);
 
         restClient.post()
                 .uri(properties.getProgress().getUrl())
@@ -47,20 +57,18 @@ public class ManagerRegistrationClient {
                 .toBodilessEntity();
     }
 
-    public void setComment(String Objectname, String Category, String comments){
-                String url=properties.getComment().getUrl();
-                UpdateComment body= new UpdateComment(Objectname, Category, comments);
+    public void setComment(String Objectname, String Category, String comments) {
+        String url = properties.getComment().getUrl();
+        UpdateComment body = new UpdateComment(Objectname, Category, comments);
 
-                restClient.post()
+        restClient.post()
                 .uri(url)
-                .header(             HttpHeaders.AUTHORIZATION,
-                    "Bearer eI0O1WW7Mi7Ik6OAMCYCxfO8E16Li-5f"
-            )
+                .header(HttpHeaders.AUTHORIZATION,
+                        "Bearer eI0O1WW7Mi7Ik6OAMCYCxfO8E16Li-5f")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(body)
                 .retrieve()
                 .toBodilessEntity();
-
 
     }
 
@@ -91,8 +99,7 @@ public class ManagerRegistrationClient {
             String key,
             long contentLength,
             Map<String, String> userMetadata,
-            Map<String, String> tags
-    ) {
+            Map<String, String> tags) {
         GatewayProperties.Manager manager = properties.getManager();
         String normalizedKey = key.startsWith("/")
                 ? key.substring(1)
@@ -120,12 +127,12 @@ public class ManagerRegistrationClient {
         } catch (JsonProcessingException e) {
             throw new IllegalStateException(
                     "Unable to serialize S3 metadata and tags",
-                    e
-            );
+                    e);
         }
-        int commentSize=comments.getBytes(StandardCharsets.UTF_8).length;
+        int commentSize = comments.getBytes(StandardCharsets.UTF_8).length;
         if (commentSize > 4096) {
-            throw new S3Exception(400, "MetadataTooLarge", "combined metadata and tags exceed the manager comments limit", key);
+            throw new S3Exception(400, "MetadataTooLarge",
+                    "combined metadata and tags exceed the manager comments limit", key);
 
         }
 
@@ -139,13 +146,12 @@ public class ManagerRegistrationClient {
                 manager.getMoverName(),
                 manager.getDiskName(),
                 manager.getOptions(),
-                //  manager.getComments(),
+                // manager.getComments(),
                 comments,
                 manager.getInstanceNumber(),
                 filelist,
                 manager.getMedia(),
-                manager.getPriority()
-        );
+                manager.getPriority());
         System.out.println("RegisterRequest: " + body);
         return restClient.post()
                 .uri(manager.getRegisterUrl())
@@ -157,8 +163,7 @@ public class ManagerRegistrationClient {
 
     public record FileItem(
             String name,
-            long size
-            ) {
+            long size) {
 
     }
 
@@ -172,84 +177,60 @@ public class ManagerRegistrationClient {
             String moverName,
             String DiskName,
             String options,
-            @JsonProperty("comments")
-            String comments,
+            @JsonProperty("comments") String comments,
             String instancenumber,
             List<FileItem> filelist,
             String media,
-            int priority
-            ) {
+            int priority) {
 
     }
 
     public record HeadObjectResponse(
-            @JsonProperty("am_object_name")
-            String objectName,
-            @JsonProperty("objectSizeBytes")
-            String objectSizeBytes,
-            @JsonProperty("am_ObjectChecksum")
-            String checksum,
-            @JsonProperty("am_archiveDate")
-            String archiveDate,
-            @JsonProperty("am_object_category")
-            String category,
-            @JsonProperty("status")
-            int status,
-            @JsonProperty("am_objectComments")
-            String comments,
-            @JsonProperty("am_storageClass")
-            String storageClass
-            ) {
+            @JsonProperty("am_object_name") String objectName,
+            @JsonProperty("objectSizeBytes") String objectSizeBytes,
+            @JsonProperty("am_ObjectChecksum") String checksum,
+            @JsonProperty("am_archiveDate") String archiveDate,
+            @JsonProperty("am_object_category") String category,
+            @JsonProperty("status") int status,
+            @JsonProperty("am_objectComments") String comments,
+            @JsonProperty("am_storageClass") String storageClass) {
 
         public long contentLength() {
             return Long.parseLong(objectSizeBytes);
         }
     }
 
-
     public record RegisterResponse(
-            @JsonProperty("reqID")
-            Integer reqID,
-            @JsonProperty("status")
-            Integer status
-            ) {
+            @JsonProperty("reqID") Integer reqID,
+            @JsonProperty("status") Integer status) {
 
     }
 
     public record RegisterProgress(
-            @JsonProperty("reqID")
-            int reqID,
-            @JsonProperty("state")
-            int state,
-            @JsonProperty("progress")
-            int progress,
-            @JsonProperty("moverName")
-            String moverName,
-            @JsonProperty("remarks")
-            String remarks,
-            @JsonProperty("checksum")
-            String checksum
-            ) {
+            @JsonProperty("reqID") int reqID,
+            @JsonProperty("state") int state,
+            @JsonProperty("progress") int progress,
+            @JsonProperty("moverName") String moverName,
+            @JsonProperty("remarks") String remarks,
+            @JsonProperty("checksum") String checksum,
+         @JsonProperty("objectSizeBytes") Long objectSizeBytes) {
 
     }
 
     public record S3Attributes(
             int version,
             Map<String, String> userMetadata,
-            Map<String, String> tags
-            ) {
+            Map<String, String> tags) {
 
         public S3Attributes {
             userMetadata = userMetadata == null ? Map.of() : Map.copyOf(userMetadata);
             tags = tags == null ? Map.of() : Map.copyOf(tags);
         }
     }
+
     public record UpdateComment(
-        @JsonProperty("objectName")
-        String objectName,
-        @JsonProperty("category")
-        String category,
-        @JsonProperty("comments")
-        String comments
-    ){}
+            @JsonProperty("objectName") String objectName,
+            @JsonProperty("category") String category,
+            @JsonProperty("comments") String comments) {
+    }
 }

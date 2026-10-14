@@ -677,14 +677,19 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
         }
         h.setContentLength(count);
         h.setLastModified(Files.getLastModifiedTime(p).toMillis());
-        ObjectMetadataStore.Metadata m = metadata.get(bucket, actual);
-        applyObjectHeaders(h, m);
-        if (m.etag() != null && !m.etag().isBlank()) {
-            h.setETag("\"" + m.etag() + "\"");
+        // ObjectMetadataStore.Metadata m = metadata.get(bucket, actual);
+        // applyObjectHeaders(h, m);
+        if (object.checksum() != null && !object.checksum().isBlank()) {
+            h.setETag("\"" + object.checksum() + "\"");
         }
-        long lastModified = m.lastModified() != null
-                ? m.lastModified().toEpochMilli()
-                : Files.getLastModifiedTime(p).toMillis();
+       long lastModified = object.archiveDate() != null && !object.archiveDate().isBlank()
+        ? LocalDateTime.parse(
+                object.archiveDate(),
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+            .atZone(ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+        : Files.getLastModifiedTime(p).toMillis();
         h.setLastModified(lastModified);
         h.set(HttpHeaders.ACCEPT_RANGES, "bytes");
         h.set("x-amz-storage-class", storageClass);
@@ -1116,7 +1121,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
                                     12,
                                     percent,
                                     "",
-                                    "");
+                                    "",
+                                null);
                         }
                     });
         } catch (IOException | RuntimeException storageError) {
@@ -1127,7 +1133,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
                     storageError.getMessage() == null
                             ? "PUT failed"
                             : storageError.getMessage(),
-                    "");
+                    "",
+                    null);
 
             throw storageError;
         }
@@ -1145,7 +1152,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
                 3,
                 100,
                 "",
-                stored.etag());
+                stored.etag(),
+                stored.length());
 
         // Make the completed NLD landing visible in the application log.
         log.info(
@@ -1154,8 +1162,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
                 stored.path());
 
         // Persist metadata only after the object bytes have been saved successfully.
-        metadata.put(bucket, actual, storageClass, objectHeaders, stored.length(), stored.etag(),
-                stored.lastModified());
+        // metadata.put(bucket, actual, storageClass, objectHeaders, stored.length(), stored.etag(),
+        //         stored.lastModified());
 
         // Record the asynchronous archive hand-off; this does not replace NLD storage.
         String rawEtag = stored.etag().replace("\"", "");
@@ -1180,7 +1188,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
             int state,
             int progress,
             String remarks,
-            String checksum) {
+            String checksum,
+            Long objectSizeBytes) {
         try {
             log.info(
                     "Sending progress: reqID={}, state={}, progress={}",
@@ -1193,7 +1202,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
                     state,
                     progress,
                     remarks,
-                    checksum);
+                    checksum,
+                    objectSizeBytes);
         } catch (RuntimeException e) {
             log.error(
                     "Progress update failed: reqID={}, state={}, progress={}",
@@ -1555,7 +1565,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
                     error.getMessage() == null
                             ? "Multipart upload failed"
                             : error.getMessage(),
-                    "");
+                    "",
+                    null);
 
             throw error;
         }
@@ -1569,7 +1580,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
                 3,
                 100,
                 "",
-                stored.etag());
+                stored.etag(),
+                stored.length());
         String comments = objectMapper.writeValueAsString(
                 new ManagerRegistrationClient.S3Attributes(
                         1,
