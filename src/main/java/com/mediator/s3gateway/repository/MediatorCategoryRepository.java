@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.dao.DuplicateKeyException;
 
 @Repository
 public class MediatorCategoryRepository {
@@ -14,15 +15,57 @@ public class MediatorCategoryRepository {
         this.jdbc = jdbc;
     }
 
-    public List<String> findAll() {
-        String sql = """
-                SELECT DISTINCT am_object_category
-                FROM am_objects
-                WHERE am_object_category IS NOT NULL
-                  AND TRIM(am_object_category) <> ''
-                ORDER BY am_object_category
-                """;
-
-        return jdbc.queryForList(sql, String.class);
+    public List<String> findAll(String prefix, String afterBucket, int limit) {
+        String bucketPrefix = prefix == null ? "" : prefix;
+        if (afterBucket == null || afterBucket.isBlank()) {
+            return jdbc.queryForList("""
+                    SELECT category_name
+                    FROM am_categories
+                    WHERE category_name LIKE ?
+                    ORDER BY category_name
+                    LIMIT ?
+                    """,
+                    String.class,
+                    bucketPrefix + "%",
+                    limit);
+        }
+        return jdbc.queryForList("""
+                   SELECT category_name
+                   FROM am_categories
+                   WHERE category_name LIKE ?
+                     AND category_name > ?
+                   ORDER BY category_name
+                   LIMIT ?
+                """,
+                String.class,
+                bucketPrefix + "%",
+                afterBucket,
+                limit);
     }
+
+    public void ensureExists(String category) {
+        try {
+            jdbc.update("""
+                    INSERT INTO am_categories (category_name)
+                    VALUES (?)
+                    """, category);
+        } catch (DuplicateKeyException ignored) {
+            // Category already exists: leave the existing row unchanged.
+        }
+    }
+
+    public boolean exists(String category) {
+        Boolean exists = jdbc.queryForObject("""
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM am_categories
+                    WHERE category_name = ?
+                )
+                """,
+                Boolean.class,
+                category);
+
+        return Boolean.TRUE.equals(exists);
+    }
+
 }

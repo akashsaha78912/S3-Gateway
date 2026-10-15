@@ -131,9 +131,26 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
      * @return an AWS-style XML document containing every visible bucket
      */
     @GetMapping(value = "/", produces = MediaType.APPLICATION_XML_VALUE)
-    public String listBuckets(HttpServletRequest request) {
+    public String listBuckets(
+        @RequestParam (required =false, name="max-buckets") Integer maxBuckets,
+        @RequestParam (required =false, name="continuation-token") String token,
+        @RequestParam (required =false) String prefix,
+        HttpServletRequest request) {
         logRequest(request);
         log.info("Executing ListBuckets operation");
+
+        int limit=maxBuckets==null ? 10_000 :Math.max(1,Math.min(maxBuckets,10_000));
+
+        String afterBucket=token ==null || token.isBlank() ? null : decodeContinuationToken(token);
+        
+        //Fetch one additional bucket so we know if the result is truncated
+        List<String> fetchedBuckets = mediatorCategories.findAll(prefix, afterBucket, limit + 1);
+        
+        boolean truncated = fetchedBuckets.size() > limit;
+
+        List<String> page =truncated ? fetchedBuckets.subList(0, limit) : fetchedBuckets;
+
+        String nextToken =truncated ? encodeContinuationToken(page.get(page.size() - 1)) : null;
 
         // Build the S3 XML response from the bucket names exposed by the store.
         StringBuilder x = new StringBuilder(
@@ -142,18 +159,27 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
         // x.append("<Bucket><Name>").append(xml(b)).append("</Name></Bucket>");
         // }
         // for (String b : store.buckets()) {
-        for (String b : mediatorCategories.findAll()) {
-            x.append("<Bucket>")
-                    .append("<Name>")
-                    .append(xml(b))
-                    .append("</Name>")
-                    .append("<CreationDate>")
-                    .append(DateTimeFormatter.ISO_INSTANT.format(
-                            java.time.Instant.now()))
-                    .append("</CreationDate>")
-                    .append("</Bucket>");
-        }
-        return x.append("</Buckets></ListAllMyBucketsResult>").toString();
+          for (String bucket : page) {
+              x.append("<Bucket><Name>")
+                .append(xml(bucket))
+                .append("</Name><CreationDate>")
+                .append(DateTimeFormatter.ISO_INSTANT.format(java.time.Instant.now()))
+                .append("</CreationDate></Bucket>");
+    }
+            x.append("</Buckets>");
+            if(nextToken !=null){
+                x.append("<ContinuationToken>")
+                .append(xml(nextToken))
+                .append("</ContinuationToken>");
+            }
+            if(prefix !=null && !prefix.isBlank()){
+            x.append("<Prefix>")
+                    .append(xml(prefix))
+                    .append("</Prefix>");
+            }
+               String responseXml = x.append("</ListAllMyBucketsResult>").toString();
+    log.info("ListObjects response XML: {}", responseXml);
+    return responseXml;
     }
 
     /**
@@ -169,7 +195,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
         logRequest(request);
         log.info("Executing CreateBucket operation for bucket: {}", bucket);
 
-        store.createBucket(bucket);
+       //store.createBucket(bucket);
+        mediatorCategories.ensureExists(bucket);
         return ResponseEntity.ok().header(HttpHeaders.LOCATION, "/" + bucket).build();
     }
 
@@ -429,7 +456,10 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
                     .append(xml(nextToken))
                     .append("</NextContinuationToken>");
         }
-        return x.append("</ListBucketResult>").toString();
+        
+      String responseXml = x.append("</ListBucketResult>").toString();
+    log.info("ListObjects response XML: {}", responseXml);
+    return responseXml;
     }
 
     private static String encodeContinuationToken(String key) {
@@ -486,20 +516,19 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
          * HEAD /flow-test
          * HEAD /flow-test/
          */
-        if (actual.isBlank()) {
-            log.info("Executing HeadBucket - Bucket: {}", bucket);
-            // we need to always send Ok to head bucket request
-            // if (!store.bucketExists(bucket)) {
-            // throw new S3Exception(
-            // 404,
-            // "NoSuchBucket",
-            // "The specified bucket does not exist",
-            // bucket
-            // );
-            // }
+                if (actual.isBlank()) {
+                log.info("Executing HeadBucket - Bucket: {}", bucket);
 
-            return ResponseEntity.ok().build();
-        }
+                if (!mediatorCategories.exists(bucket)) {
+                    throw new S3Exception(
+                            404,
+                            "NoSuchBucket",
+                            "The specified bucket does not exist",
+                            bucket);
+                }
+
+                return ResponseEntity.ok().build();
+            }
 
         /*
          * HeadObject:
@@ -1049,6 +1078,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
             HttpServletRequest request) throws IOException, InterruptedException, ExecutionException {
         logRequest(request);
         String actual = clean(key);
+
+        mediatorCategories.ensureExists(bucket);
         // object whose key ends with "/". Represent it as an NLD directory.
         if (actual.endsWith("/") && request.getContentLengthLong() == 0) {
             store.createDirectory(bucket, actual);
@@ -1361,6 +1392,8 @@ private final CachedMediatorObjectLookup cachedMediatorObjects;
 
         logRequest(request);
         String actual = clean(key);
+        mediatorCategories.ensureExists(bucket);
+
         storageClass = storageClass.toUpperCase(Locale.ROOT);
         if (!Set.of("STANDARD", "GLACIER", "DEEP_ARCHIVE").contains(storageClass)) {
             throw new S3Exception(400, "InvalidStorageClass",
